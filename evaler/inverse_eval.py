@@ -1,8 +1,6 @@
 
 """
 Contains functions that reads fiff files and/or stc_ground_truth and return point spread, cross-talk, average error etc. 
-
-author: John the viking
 """
 
 import numpy as np

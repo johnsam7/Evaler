@@ -8,7 +8,6 @@ Created on Thu Jul 18 18:12:55 2019
 
 import mne
 import numpy as np
-#from .plotting_tools import plot_event_topography, plot_3d_dipoles
 
 
 def get_forward_model(subjects_dir = '/autofs/cluster/fusion/data/FreeSurfer', \
