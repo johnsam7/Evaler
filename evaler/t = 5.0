@@ -1,0 +1,52 @@
+[0;31mSignature:[0m
+[0mmne[0m[0;34m.[0m[0mmake_bem_model[0m[0;34m([0m[0;34m[0m
+[0;34m[0m    [0msubject[0m[0;34m,[0m[0;34m[0m
+[0;34m[0m    [0mico[0m[0;34m=[0m[0;36m4[0m[0;34m,[0m[0;34m[0m
+[0;34m[0m    [0mconductivity[0m[0;34m=[0m[0;34m([0m[0;36m0.3[0m[0;34m,[0m [0;36m0.006[0m[0;34m,[0m [0;36m0.3[0m[0;34m)[0m[0;34m,[0m[0;34m[0m
+[0;34m[0m    [0msubjects_dir[0m[0;34m=[0m[0;32mNone[0m[0;34m,[0m[0;34m[0m
+[0;34m[0m    [0mverbose[0m[0;34m=[0m[0;32mNone[0m[0;34m,[0m[0;34m[0m
+[0;34m[0m[0;34m)[0m[0;34m[0m[0;34m[0m[0m
+[0;31mDocstring:[0m
+Create a BEM model for a subject.
+
+.. note:: To get a single layer bem corresponding to the --homog flag in
+          the command line tool set the ``conductivity`` parameter
+          to a list/tuple with a single value (e.g. [0.3]).
+
+Parameters
+----------
+subject : str
+    The subject.
+ico : int | None
+    The surface ico downsampling to use, e.g. 5=20484, 4=5120, 3=1280.
+    If None, no subsampling is applied.
+conductivity : array of int, shape (3,) or (1,)
+    The conductivities to use for each shell. Should be a single element
+    for a one-layer model, or three elements for a three-layer model.
+    Defaults to ``[0.3, 0.006, 0.3]``. The MNE-C default for a
+    single-layer model would be ``[0.3]``.
+subjects_dir : string, or None
+    Path to SUBJECTS_DIR if it is not set in the environment.
+
+verbose : bool, str, int, or None
+    If not None, override default verbose level (see :func:`mne.verbose`
+    and :ref:`Logging documentation <tut_logging>` for more).
+
+Returns
+-------
+surfaces : list of dict
+    The BEM surfaces. Use `make_bem_solution` to turn these into a
+    `ConductorModel` suitable for forward calculation.
+
+Notes
+-----
+.. versionadded:: 0.10.0
+
+See Also
+--------
+make_bem_solution
+make_sphere_model
+read_bem_surfaces
+write_bem_surfaces
+[0;31mFile:[0m      /autofs/cluster/fusion/john/github/mne-python/mne/bem.py
+[0;31mType:[0m      function

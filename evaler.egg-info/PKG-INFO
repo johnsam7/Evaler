@@ -1,0 +1,20 @@
+Metadata-Version: 1.2
+Name: evaler
+Version: 0.1.dev0
+Summary: Evaler.
+Home-page: UNKNOWN
+Maintainer: John GW Samuelsson
+Maintainer-email: johnsam@mit.edu
+License: UNKNOWN
+Description: UNKNOWN
+Platform: any
+Classifier: Intended Audience :: Science/Research
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved
+Classifier: Programming Language :: Python
+Classifier: Topic :: Software Development
+Classifier: Topic :: Scientific/Engineering
+Classifier: Operating System :: Microsoft :: Windows
+Classifier: Operating System :: POSIX
+Classifier: Operating System :: Unix
+Classifier: Operating System :: MacOS

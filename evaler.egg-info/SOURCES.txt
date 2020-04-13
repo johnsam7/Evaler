@@ -1,0 +1,9 @@
+setup.py
+evaler/__init__.py
+evaler/inverse_eval.py
+evaler/mne_simulation.py
+evaler/source_space_tools.py
+evaler.egg-info/PKG-INFO
+evaler.egg-info/SOURCES.txt
+evaler.egg-info/dependency_links.txt
+evaler.egg-info/top_level.txt
