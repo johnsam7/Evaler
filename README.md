@@ -1,5 +1,5 @@
 # Evaler
-Resolution metrics for evaluating spatial fidelity of M/EEG source estimates.
+Python package that relies on MNE-python for quantifying resolution metrics for evaluating spatial fidelity of M/EEG source estimates.
 
 Example code in for_manuscript.py and some subject data in subj_data for regenerating data and the figures in the article 
 "Spatial Fidelity of MEG/EEG Source Estimates: A Unified Evaluation Approach". 
