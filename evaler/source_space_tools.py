@@ -12,6 +12,54 @@ import mne
 import warnings
 
 
+def add_verts(src, verts_to_add_hemi):
+    """
+    Add vertices in verts_to_add_hemi to src, which can be used to activate
+    sources before a forward model is built.
+
+    Parameters
+    ----------
+    verts_to_add_hemi : list
+        A list containing two nested lists that each contains the vertices to
+        add to each hemisphere.
+    src : bool, optional
+        List of source space objets (left and right hemispheres).
+
+    Returns
+    -------
+    new_src
+        New source spaces with activated sources.
+    """
+    new_src = src.copy()
+    for hemi in range(2):
+        for vert in verts_to_add_hemi[hemi]:
+            new_src[hemi]['inuse'][vert] = 1
+            new_src[hemi]['nuse'] = new_src[hemi]['nuse'] + 1
+            new_src[hemi]['vertno'] = np.nonzero(new_src[hemi]['inuse'])[0]
+    
+    return new_src
+
+
+def fill_empty_labels(src, labels):
+    labels_divide = [[(c, label) for c, label in enumerate(labels) if label.hemi=='lh'],
+                 [(c, label) for c, label in enumerate(labels) if label.hemi=='rh']]
+    verts_to_add_hemi = []
+    zero_labels = []
+    for c, hemi in enumerate(['lh', 'rh']):
+        verts_to_add = []
+        labels_hemi = labels_divide[c]
+        for label in labels_hemi:
+            label_verts = label[1].vertices
+            sources_in_label = np.array([vert for vert in label[1].vertices if vert in src[c]['vertno']])
+            if len(sources_in_label) == 0:
+                verts_to_add.append(label[1].vertices[0])
+                zero_labels.append(label)
+        verts_to_add_hemi.append(verts_to_add)
+    src_new = add_verts(src, verts_to_add_hemi)
+    print('Empty labels that have been filled: ', end='')
+    for label in zero_labels: print(label[1].name + ', ',  end='')
+    return src_new
+
 
 def print_surf(fpath,rr,tris,scals=[],color=np.array([True])):
     """Prints a ply file from a triangulated surface based on rr and tris."""
@@ -41,10 +89,10 @@ def print_surf(fpath,rr,tris,scals=[],color=np.array([True])):
     rr_list = []
     for c,x in enumerate(rr):
         color = [int(np.ceil(256.0*val))-1 for val in plt.cm.jet(scals[c])]
-        temp_tuple = (x[0]*1000, x[1]*1000, x[2]*1000, color[0], color[1], color[2])            
+        temp_tuple = (x[0], x[1], x[2], color[0], color[1], color[2])            
         rr_list.append(temp_tuple)
     for c,x in enumerate(rr):
-        temp_tuple = (x[0]*1000, x[1]*1000, x[2]*1000, color[0], color[1], color[2])            
+        temp_tuple = (x[0], x[1], x[2], color[0], color[1], color[2])            
         rr_list.append(temp_tuple)
     
     vertex = np.array(rr_list,dtype=[('x', 'float64'), ('y', 'float64'), ('z', 'float64'),
@@ -124,9 +172,44 @@ def calculate_area(rr,tris):
     
     return area
 
+def solid_angles(obs_points, rr, tris, n_jobs=1):
+    from joblib import Parallel, delayed
+    
+    def get_solid_angs(obs_points, rr, tris):
+        solid_angles = []
+        for c, obs_point in enumerate(obs_points):
+            solid_angles.append(calculate_solid_angle(rr, tris, obs_point))
+            print(str(c/len(obs_points)*100)+' % complete         \r',end='')
+        return solid_angles
 
+    myfunc = delayed(get_solid_angs)
+    parallel = Parallel(n_jobs=n_jobs)
+    obs_points_chunks = np.array_split(obs_points, n_jobs)
+    out = parallel(myfunc(obs_points_chunk, rr, tris) for obs_points_chunk in obs_points_chunks)
 
-def calculate_normals(rr,tris,solid_angle_calc=False,obs_point=np.zeros(3)):
+    a = []
+    solid_fi = np.array([a+fi for fi in out]).flatten()
+    
+    insideout = np.zeros(solid_fi.shape)
+    for c, angle in enumerate(solid_fi):
+        if np.abs(angle-4*np.pi) < 0.01:
+            insideout[c] = 1
+        elif np.abs(angle) < 0.01:
+            insideout[c] = 0
+        else:
+            insideout[c] = 0.5
+
+    return solid_fi, insideout
+
+def calculate_solid_angle(rr, tris, obs_point):
+    RR = (rr[tris]-obs_point)
+    norms = np.linalg.norm(RR[:,:,:],axis=2)
+    solid_angle = np.sum(2*np.arctan(np.sum(np.multiply(RR[:,0,:],np.cross(RR[:,1,:],RR[:,2,:])),axis=1)/ \
+            (norms[:,0]*norms[:,1]*norms[:,2] + np.sum(np.multiply(RR[:,0,:],RR[:,1,:]),axis=1)*norms[:,2] + \
+            np.sum(np.multiply(RR[:,0,:], RR[:,2,:]),axis=1)*norms[:,1] + np.sum(np.multiply(RR[:,1,:], RR[:,2,:]),axis=1)*norms[:,0])))
+    return solid_angle
+    
+def calculate_normals(rr, tris, solid_angle_calc=False, obs_point=np.zeros(3), print_info=True):
     """Takes rr - an array of position of vertices and tris - indices of vertices that deliniates
     triangle face and returns vertex normals based on an (unweighted) average of neighboring face normals."""
     A = []
@@ -180,10 +263,10 @@ def calculate_normals(rr,tris,solid_angle_calc=False,obs_point=np.zeros(3)):
             if np.isnan(nn[c,:]).any():
                 nan_vertices.append(c)
             
-
-    print('number of nan normals that have been smoothed = ' + str(count))
-    print('Remaining NAN normals = ' + str(len(nan_vertices)))                
-    print('Total surface area: ' + np.str(area))
+    if print_info:
+        print('number of nan normals that have been smoothed = ' + str(count))
+        print('Remaining NAN normals = ' + str(len(nan_vertices)))                
+        print('Total surface area: ' + np.str(area))
     
     return (nn,area,area_list,nan_vertices)
 

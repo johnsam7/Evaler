@@ -466,8 +466,6 @@ def plot_resolution_matrix(R, labels, title, SNR, vrange = None, show_colorbar=F
 #            for ind in group:
 #                major_ticks.append(int(labels_rear[c][group])+tick_ind)
 #                tick_ind = tick_ind + labels_rear[c][group]
-
-
     
     # Change size of minor ticks
     locs, tick_labels = plt.xticks()
@@ -489,8 +487,6 @@ def plot_resolution_matrix(R, labels, title, SNR, vrange = None, show_colorbar=F
     plt.yticks(rotation='vertical')
     plt.xticks(size=6)
     plt.yticks(size=6)
-
-
 
     # Set grid lines between source groups and make lines between hemispheres
     plt.grid(b=True, which='minor', color='k', linestyle='--', alpha=0.2, linewidth = .2)
@@ -526,6 +522,8 @@ def plot_resolution_matrix(R, labels, title, SNR, vrange = None, show_colorbar=F
         plt.tight_layout()
         plt.rcParams['ytick.right'] = plt.rcParams['ytick.labelright'] = False
         plt.rcParams['ytick.left'] = plt.rcParams['ytick.labelleft'] = True
+    
+    plt.tight_layout()
     
     return plot
 

@@ -18,6 +18,27 @@ from .settings import settings_class
 from .plotting_tools import plot_topographic_parcellation
 
 
+def setup_labels(subject, parc, subjects_dir, unwanted_labels=['unknown', 'corpuscallosum']):
+
+    #Read all labels
+    all_labels = mne.read_labels_from_annot(subject, parc, subjects_dir=subjects_dir)
+    labels = []
+    labels_unwanted = []
+    for label in all_labels:
+        if label.name[0:-3] not in unwanted_labels:
+            labels.append(label)
+        else:
+            labels_unwanted.append(label)
+            print('Removing ' + label.name)
+    
+    # Reorder labels in terms of hemispheres
+    labels_lh = [label for label in labels if label.hemi=='lh']
+    labels_rh = [label for label in labels if label.hemi=='rh']
+    labels = labels_lh + labels_rh
+    
+    return labels, labels_unwanted
+
+
 def setup(subjects_dir, subject, data_path, fname_raw, fname_fwd,
           fname_eve, fname_trans, fname_epochs, n_epochs, meg_and_eeg, plot_labels=False):
     #Save data paths in settings object
@@ -32,7 +53,7 @@ def setup(subjects_dir, subject, data_path, fname_raw, fname_fwd,
                  fname_epochs=fname_epochs,
                  meg_and_eeg=meg_and_eeg)
     
-    #Read all labels and make them disjoint
+    #Read all labels
     all_labels = mne.read_labels_from_annot(settings.subject(), 'laus500', subjects_dir=settings.subjects_dir())
     labels = []
     labels_unwanted = []
@@ -100,7 +121,8 @@ def _convert_real_resolution_matrix_to_labels(R, labels, label_verts):
     R_label = np.zeros((len(labels),len(labels)))
     for a, label in enumerate(labels):
         for b, label_r in enumerate(labels):
-            R_label[b,a] = np.abs(np.sum(R[label_verts[label_r.name],:][:,label_verts[label.name]]))
+            R_label[b,a] = np.mean(np.abs(np.sum(R[:,label_verts[label.name]],axis=1)[label_verts[label_r.name]]))
+#            R_label[b,a] = np.mean(np.sum(R[label_verts[label_r.name],:][:,label_verts[label.name]], axis=1))
     return R_label 
 
 
@@ -135,18 +157,21 @@ def get_crosstalk_matrix(R):
     return R_std
 
 
-def get_R(inp):
-    """
-    General inverse solvers (empirical resolution)    
-    """
-    waveform, settings, labels, invmethod, epochs_to_use, labels_unwanted, SNR, \
-        activation_labels, compute_analytical, inv_function = inp
+def get_noise(epochs, epochs_to_use):
+    ############## Noise from epochs
+    epochs.pick_types(meg=True, eeg=True, exclude=[])
+    epochs.pick_types(meg=True, eeg=True)
+    noise_epochs = epochs[[x for x in range(len(epochs)) if x not in epochs_to_use]]
+    
+    # Compute noise covariance
+    noise_cov = mne.compute_covariance(noise_epochs)
+    
+    epochs = epochs[epochs_to_use]
+    epochs_ave = epochs.average()
+    
+    return noise_cov, epochs_ave
 
-    # Load forward matrix
-    fwd = mne.read_forward_solution(settings.fname_fwd())
-    fwd = mne.convert_forward_solution(fwd, surf_ori=True, force_fixed=True)
-
-    # Remove sources in unwanted labels (corpus callosum and unknown)
+def correct_fwd(fwd, labels_unwanted):
     sources_to_remove = np.array([])
     offset = fwd['src'][0]['nuse']
     vertnos_lh = fwd['src'][0]['vertno']
@@ -169,6 +194,23 @@ def get_R(inp):
     source_to_keep = np.where(~np.in1d(range(fwd['sol']['data'].shape[1]), sources_to_remove.astype(int)))[0]
     fwd['sol']['data'] = fwd['sol']['data'][:,source_to_keep]
     fwd['nsource'] = fwd['sol']['data'].shape[1]
+    
+    return fwd
+ 
+
+def get_R(inp):
+    """
+    General inverse solvers (empirical resolution)    
+    """
+    import warnings
+    waveform, fname_fwd, labels, invmethod, labels_unwanted, SNR, \
+        activation_labels, compute_analytical, inv_function, cov_fname, ave_fname  = inp
+
+    epochs_ave = mne.read_evokeds(ave_fname)[0]
+    noise_cov = mne.read_cov(cov_fname)
+    fwd = mne.read_forward_solution(fname_fwd)
+    fwd = mne.convert_forward_solution(fwd, surf_ori=True, force_fixed=True)
+    fwd = correct_fwd(fwd, labels_unwanted)
 
     if activation_labels == None:
         activation_labels=labels
@@ -188,18 +230,12 @@ def get_R(inp):
             vert_offset = fwd['src'][0]['nuse']
         verts_in_src_space = label.vertices[np.isin(label.vertices,fwd['src'][hemi_ind]['vertno'])]
         inds = np.where(np.in1d(fwd['src'][hemi_ind]['vertno'],verts_in_src_space))[0]+vert_offset
+        if len(inds) == 0:
+            warnings.warn(label.name + ' label has no active source.')
         label_verts.update({label.name : inds})
         
 ############## Noise from epochs
-    epochs = mne.read_epochs(settings.fname_epochs())
-    epochs.pick_types(meg=True, eeg=True, exclude=[])
-    goodies = np.array([c for c, ch in enumerate(epochs.info['ch_names']) if not ch in epochs.info['bads']])
-    epochs.pick_types(meg=True, eeg=True)
-    noise_epochs = epochs[[x for x in range(len(epochs)) if x not in epochs_to_use]]
-    
-    epochs = epochs[epochs_to_use]
-
-    epochs_ave = epochs.average()
+    goodies = np.array([c for c, ch in enumerate(epochs_ave.info['ch_names']) if not ch in epochs_ave.info['bads']])
     noise = epochs_ave.data[:, 0:waveform.shape[1]]
 
     R_emp = np.zeros((len(labels),len(activation_labels)))
@@ -209,16 +245,13 @@ def get_R(inp):
     mod_ind = {'mag' : [], 'grad' : [], 'eeg' : []}
     noise_power = mod_ind.copy()
     for c, (meg, eeg) in enumerate([('mag', False), ('grad', False), (False, True)]):
-        inds = mne.pick_types(epochs.info, meg = meg, eeg = eeg)
+        inds = mne.pick_types(epochs_ave.info, meg = meg, eeg = eeg)
         mod_ind[list(mod_ind.keys())[c]] = inds
         noise_power[list(mod_ind.keys())[c]] = np.mean(np.linalg.norm(noise[inds, :], axis=1))
     
-    # Compute noise covariance
-    noise_cov = mne.compute_covariance(noise_epochs)
-    
     # Create inverse operator if applied inverse method is linear
     if invmethod in ['MNE', 'dSPM', 'eLORETA', 'sLORETA']:
-        inverse_operator = mne.minimum_norm.make_inverse_operator(epochs.info, fwd, noise_cov, depth=None, fixed=True)
+        inverse_operator = mne.minimum_norm.make_inverse_operator(epochs_ave.info, fwd, noise_cov, depth=None, fixed=True)
 #        if SNR > 0:
 #            lambda2 = 1. / SNR**2
 #        else:
@@ -230,7 +263,7 @@ def get_R(inp):
     for c,label in enumerate(activation_labels):
         inds = label_verts[label.name]
         G = fwd['sol']['data'][goodies, :][:, inds]
-        act = np.repeat(waveform, repeats=len(inds), axis=0)*10**-8
+        act = np.repeat(waveform, repeats=len(inds), axis=0)#*10**-8
         signal = np.dot(G,act)
 
         """
@@ -274,9 +307,6 @@ def get_R(inp):
                 break_point
                 raise Exception('Estimate was equal to zero. Aborting.')
         else:
-#            if invmethod in ['MNE', 'dSPM', 'eLORETA', 'sLORETA']:
-#                estimate = mne.minimum_norm.apply_inverse(evoked, inverse_operator, lambda2, invmethod, verbose='WARNING')
-#                source = estimate.data
             # Inv_function is a user specified inverse method that maps evoked -> array (n_labels x n_labels)
             source = inv_function(evoked, SNR, invmethod, inverse_operator)
             if np.sum(np.isnan(source))>0:
@@ -290,7 +320,7 @@ def get_R(inp):
             # Resolution matrix without summing of patch vertices, resulting in shape (n_vertices, n_labels)
             R_label_vert[:,c] = np.mean(np.abs(source), axis=1)
             
-        print('\n ' + settings.subject() + ', ' + invmethod + ': ' + str(c/len(activation_labels) * 100) + ' % done... \n')
+        print('\n ' + ', ' + invmethod + ': ' + str(c/len(activation_labels) * 100) + ' % done... \n')
 
     if compute_analytical:
         
@@ -305,7 +335,7 @@ def get_R(inp):
             return R_emp
         R = np.dot(K, fwd['sol']['data'][goodies, :])
         R_analytical = _convert_real_resolution_matrix_to_labels(R, labels, label_verts)
-        return R_emp, np.abs(R_analytical), np.abs(R)
+        return R_emp, R_analytical, np.abs(R)
     
     else:
         return (np.abs(R_emp), R_label_vert)
@@ -339,7 +369,7 @@ def get_average_point_spread(R,arg):
     return acm
 
 
-def get_spatial_dispersion(R, src, settings, labels):
+def get_spatial_dispersion(R, src, labels):
     rr = np.concatenate((src[0]['rr'][src[0]['vertno']],
                          src[1]['rr'][src[1]['vertno']]), axis=0)
     peak_positons = rr[np.argmax(np.abs(R), axis=0), :]
@@ -352,7 +382,7 @@ def get_spatial_dispersion(R, src, settings, labels):
 #                          - np.repeat(rr.reshape(rr.shape[0], 1, 3), repeats=len(rr), axis=1), axis=2)
 #    SD_molins = np.sqrt(np.divide(np.diag(np.dot(dist.T**2, R**2)), np.sum(R**2, axis=0)))*100    
     #Samuelsson
-    dist = np.linalg.norm(np.repeat(peak_positons.reshape(1, len(peak_positons), 3), repeats=rr.shape[0], axis=0)
+    dist = np.linalg.norm(np.repeat(peak_positons.reshape(1, len(peak_positons), 3), repeats=R.shape[0], axis=0)
                           - np.repeat(rr.reshape(rr.shape[0], 1, 3), repeats=len(peak_positons), axis=1), axis=2)
     SD = np.divide(np.diag(np.dot(dist.T, R)), np.sum(np.abs(R), axis=0))*100
 #    r_dist = np.linalg.norm(np.repeat(rr.reshape((rr.shape[0], rr.shape[1], 1)), repeats=peak_positons.shape[0], axis=2) - \
@@ -401,12 +431,13 @@ def get_spherical_coge(R, settings, labels):
     spherical_coge['coge'] = 100*np.array(spherical_coge['coge'])    
     return spherical_coge
 
-def get_label_center_points(settings, labels, src, src_space_sphere):
+def get_label_center_points(labels, src, src_space_sphere):
     labels_divide = [[(c, label) for c, label in enumerate(labels) if label.hemi=='lh'],
                  [(c, label) for c, label in enumerate(labels) if label.hemi=='rh']]
     
     center_points = []
     center_vertices = []
+    zero_labels = []
     for c, hemi in enumerate(['lh', 'rh']):
         src_sphere = src_space_sphere[c]
         
@@ -419,21 +450,26 @@ def get_label_center_points(settings, labels, src, src_space_sphere):
             label_verts = label[1].vertices
             label_center = np.mean(rr[label_verts,:],axis=0)
             sources_in_label = np.array([vert for vert in label[1].vertices if vert in src[c]['vertno']])
-            center_vertex = sources_in_label[np.argmin(np.linalg.norm(label_center-rr[sources_in_label, :], axis=1))]
-            center_vertices.append(center_vertex + c*src[0]['np'])
-            
+            if len(sources_in_label) == 0:
+                zero_labels.append(label)
+            else:
+                center_vertex = sources_in_label[np.argmin(np.linalg.norm(label_center-rr[sources_in_label, :], axis=1))]
+                center_vertices.append(center_vertex + c*src[0]['np'])
+    print('zero labels:')
+    print(zero_labels)
+    if len(zero_labels) > 0:
+        return np.zeros((1000,3)), np.zeros((1000,3))
     center_vertices = np.array(center_vertices)
     center_points = np.concatenate((src[0]['rr'], src[1]['rr']), axis=0)[center_vertices, :]
-    
     return center_points, center_vertices 
 
 
-def get_peak_dipole_error(R_vl, src, src_space_sphere, settings, labels):
+def get_peak_dipole_error(R_vl, src, src_space_sphere, labels):
     """
     Return error (in cm) between center of patch, found by spherical inflation, and peak reconstruction.
     """
     
-    label_center_points = get_label_center_points(settings, labels, src, src_space_sphere)[0]
+    label_center_points = get_label_center_points(labels, src, src_space_sphere)[0]
     max_sources = np.argmax(np.abs(R_vl), axis=0)
     rr = np.concatenate((src[0]['rr'][src[0]['vertno']], 
                          src[1]['rr'][src[1]['vertno']]), axis=0)
@@ -542,8 +578,8 @@ def resolution_map(settings, R, res_argument, arg='max', fpath='', print_surf=Fa
     return acm,brain 
 
 
-def get_r_master(SNRs, waveform, settings, labels, inv_methods, epochs_to_use, labels_unwanted,
-                 fwd, activation_labels=None, inv_function=None, n_jobs=1):
+def get_r_master(SNRs, waveform, fname_fwd, labels, inv_methods, labels_unwanted,
+                 cov_fname, ave_fname, activation_labels=None, inv_function=None, n_jobs=1):
     if  n_jobs < 2*len(SNRs):
         SNR_njobs = n_jobs
         activation_jobs = 1
@@ -555,6 +591,9 @@ def get_r_master(SNRs, waveform, settings, labels, inv_methods, epochs_to_use, l
     r_master_vl = {}
     iterations = np.floor_divide(len(SNRs), SNR_njobs)
     N_remainder = np.mod(len(SNRs), SNR_njobs)
+    fwd = mne.read_forward_solution(fname_fwd)
+    fwd = mne.convert_forward_solution(fwd, surf_ori=True, force_fixed=True)
+    fwd = correct_fwd(fwd, labels_unwanted)
     vertno = fwd['src'][0]['nuse'] + fwd['src'][1]['nuse']
     
     SNR_iterations = [SNRs[iteration*SNR_njobs : (iteration + 1) * SNR_njobs] for iteration in range(0, iterations)]
@@ -580,8 +619,10 @@ def get_r_master(SNRs, waveform, settings, labels, inv_methods, epochs_to_use, l
             for SNR in SNR_group:
                 for k in range(activation_jobs):
                     inp_group.append((SNR,activation_chunks[k]))
-            out = parallel(myfunc((waveform, settings, labels, inv_method, epochs_to_use, labels_unwanted,
-                                   inp[0], inp[1], compute_analytical, inv_function)) for inp in inp_group)
+
+            out = parallel(myfunc((waveform, fname_fwd, labels, inv_method, labels_unwanted,
+                                   inp[0], inp[1], compute_analytical, inv_function, 
+                                   cov_fname, ave_fname)) for inp in inp_group)
 
             for c, SNR in enumerate(SNR_group):
                 R_emp = np.array([]).reshape(len(labels),0)

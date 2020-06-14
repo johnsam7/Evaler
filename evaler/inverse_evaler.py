@@ -7,6 +7,7 @@ import evaler
 import numpy as np
 import matplotlib.pyplot as plt
 import mne
+import pickle
 
 def setup_subject(subjects_dir, subject, data_path, n_epochs):
     settings, labels, labels_unwanted, fwd, epochs_to_use = \
@@ -20,38 +21,30 @@ def setup_subject(subjects_dir, subject, data_path, n_epochs):
                  'fwd' : fwd, 'epochs_to_use' : epochs_to_use, 'subject' : subject}
     return subj_data
 
-def get_analytical_R(subject, subjects_dir, data_path, inv_method, n_epochs, 
-                     waveform, inv_function):
+def get_analytical_R(subject, data_path, inv_method, inv_function):
     """
     Returns analytical resolution matrix (only for linear inverse methods)
     """
-    subj_data = setup_subject(subjects_dir, subject, data_path, n_epochs)
-    inp = (waveform, subj_data['settings'], subj_data['labels'], inv_method, 
-           subj_data['epochs_to_use'], subj_data['labels_unwanted'], np.inf, 
-           None, True, inv_function)
+    labels, labels_unwanted = pickle.load(open(data_path+subject+'/labels', 'rb'))
+    inp = np.ones((1,101)), data_path+subject+'/'+subject+'-fwd.fif', labels, inv_method, labels_unwanted, np.inf, \
+        labels, True, inv_function, data_path+subject+'/'+subject+'-cov.fif', data_path+subject+'/'+subject+'-ave.fif'
     R_emp, R_anal, R_points = evaler.get_R(inp)
-    return R_anal
+    return R_anal, R_emp
 
-def get_empirical_R(subjects_dir, data_path, subjects, inv_methods, SNRs, n_epochs,
-                    waveform, inv_function, n_jobs=1):
+def get_empirical_R(data_path, subjects, inv_methods, SNRs, waveform, inv_function=None, n_jobs=1):
     """
     Returns empirical resolution matrices.
     """
     R_emp = {}
     for subject in subjects:
-        subj_data = setup_subject(subjects_dir, subject, data_path, n_epochs)        
-        r_master, r_master_point_patch = evaler.get_r_master(SNRs, waveform, 
-                                                             subj_data['settings'], 
-                                                             subj_data['labels'], 
-                                                             inv_methods,
-                                                             subj_data['epochs_to_use'], 
-                                                             subj_data['labels_unwanted'],
-                                                             subj_data['fwd'],
-                                                             inv_function=inv_function,
-                                                             n_jobs=n_jobs)
-        roc_stats = evaler.get_roc_statistics(r_master, inv_methods)
-        R_emp.update({subject : {'r_master' : r_master, 
-                                 'r_master_point_patch' : r_master_point_patch, 
+        labels, labels_unwanted = pickle.load(open(data_path+subject+'/labels', 'rb'))
+        fname_fwd = data_path+subject+'/'+subject+'-fwd.fif'
+        r_m, r_mpp = evaler.get_r_master(SNRs, waveform, fname_fwd, labels, inv_methods, labels_unwanted,
+                                         data_path+subject+'/'+subject+'-cov.fif', data_path+subject+'/'+subject+'-ave.fif',
+                                         labels, inv_function, n_jobs)
+        roc_stats = evaler.get_roc_statistics(r_m, inv_methods)
+        R_emp.update({subject : {'r_master' : r_m, 
+                                 'r_master_point_patch' : r_mpp, 
                                  'roc_stats' : roc_stats}})
     return R_emp
 
@@ -68,7 +61,7 @@ def get_average_R(R_emp):
         r_master.update({method : np.mean(r_master_subject, axis=3)})
     return r_master
 
-def get_resolution_metrics(R_emp, subjects_dir, data_path, n_epochs):
+def get_resolution_metrics(R_emp, data_path):
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
     n_subj = len(list(R_emp.keys()))
@@ -81,20 +74,15 @@ def get_resolution_metrics(R_emp, subjects_dir, data_path, n_epochs):
         SD_method = np.zeros((n_subj, n_labels, len(SNRs)))
         
         for d, subject in enumerate(list(R_emp.keys())):
-            subj_data = setup_subject(subjects_dir, subject, data_path, n_epochs)
-            src_space_sphere = mne.setup_source_space(subject=subject, 
-                                                      surface='sphere', spacing='ico5',
-                                                      subjects_dir=subjects_dir, add_dist=False)
+            fwd = mne.read_forward_solution( data_path+subject+'/'+subject+'-fwd.fif')
+            labels, labels_unwanted = pickle.load(open(data_path+subject+'/labels', 'rb'))
+            src = evaler.correct_fwd(fwd, labels_unwanted)['src']
+            src_space_sphere = mne.read_source_spaces(data_path+subject+'/'+subject+'sphere-src.fif')
             
             for c, SNR in enumerate(SNRs):
                 R_vl = R_emp[subject]['r_master_point_patch'][method][:,:,c]
-                PE_method[d, :, c] = evaler.get_peak_dipole_error(R_vl, subj_data['fwd']['src'], 
-                                                                  src_space_sphere, 
-                                                                  subj_data['settings'], 
-                                                                  subj_data['labels'])
-                SD_method[d, :, c] = evaler.get_spatial_dispersion(R_vl, subj_data['fwd']['src'],
-                                                                   subj_data['settings'], 
-                                                                   subj_data['labels'])
+                PE_method[d, :, c] = evaler.get_peak_dipole_error(R_vl, src, src_space_sphere, labels)
+                SD_method[d, :, c] = evaler.get_spatial_dispersion(R_vl, src, labels)
         res_metrics.update({method : {'PE' : PE_method, 'SD' : SD_method}})
     return res_metrics
 
@@ -156,17 +144,14 @@ def plot_dipolar_activation(R, inv_method, subj_data, SNRs, label_ind, SNR_ind):
 # Plot average of subjects results
 
 # Plot median source metrics over cortex for SNR_ind
-def plot_res_metrics_topo(R_emp, SNRs, settings, res_metrics, labels, SNR_ind, data_dir='', save_stc=False):
+def plot_res_metrics_topo(R_emp, src, SNRs, res_metrics, labels, SNR_ind, data_path, subject, data_dir='', save_stc=False):
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
-    fwd = mne.read_forward_solution(settings.fname_fwd())
     for inv_method in inv_methods:
         for c, metric in enumerate(['SD', 'PE']):
             scals = np.median(res_metrics[inv_method][metric][:,:,SNR_ind], axis=0).reshape(len(labels),1)
-            stc = mne.simulation.simulate_stc(fwd['src'], labels, scals, tmin=0, tstep=1)
-            brain = stc.plot(subject = settings.subject(), subjects_dir=settings.subjects_dir(), 
-                             smoothing_steps=3, transparent=True, 
-                             title=inv_method+' '+metric+' '+str(SNRs[SNR_ind]),
+            stc = mne.simulation.simulate_stc(src, labels, scals, tmin=0, tstep=1)
+            brain = stc.plot(subjects_dir=data_path, subject=subject, smoothing_steps=3, transparent=True, title=inv_method+' '+metric+' '+str(SNRs[SNR_ind]),
                              clim = {'kind' : 'value', 'lims' : [(0., 5.0, 7.0), (0., 0.75, 4.)][c]})
             if save_stc:
                 stc.save(data_dir + metric + '_' + inv_method + '_' + str(SNRs[SNR_ind]))
@@ -185,8 +170,12 @@ def plot_res_metrics_hist(res_metrics, inv_methods, SNR_ind):
         plt.grid(linestyle='--', alpha=0.2)
     return fig
     
-# Plot median values for localization error and point spread
+ 
 def plot_medians(R_emp, res_metrics, figure_labels, metric_labels, SNRs_to_plot):
+    """
+    Plot median values for localization error and point spread. 
+    10**-5 in SNRs_to_plot will be replaced with 0 and 10**3 with inf.
+    """
     import matplotlib.ticker as mticker
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
@@ -225,10 +214,12 @@ def plot_medians(R_emp, res_metrics, figure_labels, metric_labels, SNRs_to_plot)
         a = mticker.ScalarFormatter()
         ax.xaxis.set_major_formatter(a)
         ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda y, _: '{:g}'.format(y)))
-        # Pause and copy-paste here... (pyplot LOL)
-        evaler.change_tick('x', 10**-5, '0')
-        evaler.change_tick('x', 10**3, r'$\infty$', n_ticks_inv=0)
-        plt.xlim(np.min(SNRs_to_plot),np.max(SNRs_to_plot))
+#        # Pause and copy-paste here... (pyplot LOL)
+#        if 10**-5 in SNRs_to_plot:
+#            evaler.change_tick('x', 10**-5, '0')
+#        if 10**3 in SNRs_to_plot:
+#            evaler.change_tick('x', 10**3, r'$\infty$', n_ticks_inv=0)
+        plt.xlim(1.001*np.min(SNRs_to_plot), 0.999*np.max(SNRs_to_plot))
         plt.tight_layout()
     return fig
 
@@ -245,6 +236,7 @@ def plot_roc_auc(R_emp, roc_stats, SNR_ind, figure_labels, SNRs_to_plot, plot_li
                                       np.max(roc_stats['acu'][method], axis=1)])})
     evaler.plot_auc(auc, SNRs_to_plot, plot_limits=plot_limits, plot_SNR_0_inf=plot_SNR_0_inf)
     plt.grid(linestyle='--', alpha=0.2)
+    plt.xlim(1.001*np.min(SNRs_to_plot), 0.999*np.max(SNRs_to_plot))
     plt.tight_layout()
     return 
 
