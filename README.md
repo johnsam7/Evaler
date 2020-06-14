@@ -1,8 +1,7 @@
 # Evaler
-For evaluating spatial fidelity of M/EEG source estimates.
+Resolution metrics for evaluating spatial fidelity of M/EEG source estimates.
 
-Example code in api.py, code for regenerating data and figures in 
-"Spatial Fidelity of MEG/EEG Source Estimates: A Unified Evaluation Approach" is
-in for_manuscript.py. 
+Example code in for_manuscript.py and some subject data in subj_data for regenerating data and figures in 
+"Spatial Fidelity of MEG/EEG Source Estimates: A Unified Evaluation Approach". 
 
-Dependencies: MNE-python, numpy, matplotlib, mayavi, plyfile
+Dependencies: The MNE-python environment and plyfile.
