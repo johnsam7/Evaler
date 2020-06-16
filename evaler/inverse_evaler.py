@@ -1,7 +1,7 @@
 """
-Created on Wed Sep 11 17:10:00 2019
-
-@author: ju357
+Function wrappers for evaluating and visualizing M/EEG source estimates using 
+Evaler repo.
+Author: John GW Samuelsson. 
 """
 import evaler
 import numpy as np
@@ -10,6 +10,22 @@ import mne
 import pickle
 
 def setup_subject(subjects_dir, subject, data_path, n_epochs):
+    """Setups some important subject data.
+
+    Parameters
+    ----------
+    subjects_dir : string
+    subject : string
+    data_path : string
+    n_epochs : int
+        Number of epochs that the average will be based on.
+
+    Returns
+    -------
+    subj_data : dictionary
+        Dictionary with subject data.
+
+    """
     settings, labels, labels_unwanted, fwd, epochs_to_use = \
         evaler.setup(subjects_dir='/autofs/cluster/fusion/data/resting_state/subjects_mri/', 
                      subject=subject,
@@ -22,8 +38,26 @@ def setup_subject(subjects_dir, subject, data_path, n_epochs):
     return subj_data
 
 def get_analytical_R(subject, data_path, inv_method, inv_function):
-    """
-    Returns analytical resolution matrix (only for linear inverse methods)
+    """Gets analytical and empirical resolution matrix (only for linear inverse methods).
+    
+    Parameters
+    ----------
+    subject : string
+    data_path : string
+        Path to subject data folder.
+    inv_method : "MNE" | "dSPM" | "sLORETA" | "eLORETA"
+        Which inverse method to test.
+    inv_function : function handle
+        User-defined function that returns the estimate. See documentation in
+        for_manuscript.py.
+
+    Returns
+    -------
+    R_anal : array, shape (n_labels, n_labels)
+        Analytical resolution matrix.
+    R_emp : array, shape (n_labels, n_labels)
+        Empirical resolution matrix.
+        
     """
     labels, labels_unwanted = pickle.load(open(data_path+subject+'/labels', 'rb'))
     inp = np.ones((1,101)), data_path+subject+'/'+subject+'-fwd.fif', labels, inv_method, labels_unwanted, np.inf, \
@@ -32,8 +66,36 @@ def get_analytical_R(subject, data_path, inv_method, inv_function):
     return R_anal, R_emp
 
 def get_empirical_R(data_path, subjects, inv_methods, SNRs, waveform, inv_function=None, n_jobs=1):
-    """
-    Returns empirical resolution matrices.
+    """Gets empirical resolution matrix.
+    
+    Parameters
+    ----------
+    data_path : string
+        Path to subject data folder.
+    subject : string
+    inv_methods : list
+        List containing strings "MNE" | "dSPM" | "sLORETA" | "eLORETA" |  "mixed_norm"
+        Which inverse methods to test.
+    SNRs : list
+        List of floats specifying which SNRs to test.
+    waveform : array, shape (n_active_sources, n_time)
+        Waveform of activation(s).
+    inv_function : function handle
+        User-defined function that returns the estimate. See documentation in
+        for_manuscript.py.
+    n_jobs : int
+        Number of threads to run in parallell.
+
+    Returns
+    -------
+    R_emp : dictionary 
+        Dictionary containing; 
+            - r_master, empirical resolution matrix; array of shape (n_labels, 
+                n_labels).
+            - r_master_point_patch, empirical resolution matrix without grouping
+                of receiving sources; array of shape (n_vertices, n_labels).
+            - roc_stats, dictionary containing ROC stats.
+        
     """
     R_emp = {}
     for subject in subjects:
@@ -49,6 +111,19 @@ def get_empirical_R(data_path, subjects, inv_methods, SNRs, waveform, inv_functi
     return R_emp
 
 def get_average_R(R_emp):
+    """Gets average of empirical resolution matrix across subjects.
+    
+    Parameters
+    ----------
+    R_emp : dictionary
+        Dictionary containing empirical resolution matrix data.
+
+    Returns
+    -------
+    r_master : dictionary 
+        Dictionary containing average of resolution matrices across subjects.
+        
+    """
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
     SNRs = R_emp[list(R_emp.keys())[0]]['r_master']['SNRs']
@@ -62,6 +137,22 @@ def get_average_R(R_emp):
     return r_master
 
 def get_resolution_metrics(R_emp, data_path):
+    """Calculates resolution metrics.
+    
+    Parameters
+    ----------
+    R_emp : dictionary
+        Dictionary containing empirical resolution matrix data.
+    data_path : string
+        Path to subject data folder.
+
+    Returns
+    -------
+    res_metrics : dictionary 
+        Dictionary with keys 'PE' and 'SD', corresponding to peak localization
+        error and spatial dispersion, respectively.
+        
+    """
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
     n_subj = len(list(R_emp.keys()))
@@ -87,6 +178,21 @@ def get_resolution_metrics(R_emp, data_path):
     return res_metrics
 
 def get_roc(R_emp):
+    """Calculates resolution metrics.
+    
+    Parameters
+    ----------
+    R_emp : dictionary
+        Dictionary containing empirical resolution matrix data.
+
+    Returns
+    -------
+    roc_stats : dictionary 
+        Dictionary containing min, mean and max on ROC curve across subjects.
+    roc_stats_all_subjects : dictionary
+        Dictionary containing ROC stats across subjects.
+        
+    """
     roc_stats = {}
     roc_stats_all_subjects = {}
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
@@ -116,8 +222,26 @@ def get_roc(R_emp):
 # Plot example results
 
 def plot_label_activation(R_emp, inv_method, subj_data, label_ind, SNR_ind):
-    """
-    Example psf and coge for label_ind over cortex at SNR_ind
+    """ Plots example psf and coge for label_ind over cortex at SNR_ind.
+
+    Parameters
+    ----------
+    R_emp : dictionary
+        Dictionary containing empirical resolution matrix data.
+    inv_method : "MNE" | "dSPM" | "sLORETA" | "eLORETA" |  "mixed_norm"
+        Inverse method to plot.
+    subj_data : instance of subject data
+    label_ind : int
+        Index of label in subj_data['labels'] whose activation to plot.
+    SNR_ind : int
+        Index of SNR in SNRs to plot.
+
+    Returns
+    -------
+    brain : mlab plot 
+        Plot of psf resulting from activation with activated and label closest 
+        to center of gravity marked.
+        
     """
     
     brain = evaler.plot_topographic_parcellation(scalar=R_emp[subj_data['subject']]['r_master'][inv_method][:,label_ind,SNR_ind],
@@ -128,23 +252,40 @@ def plot_label_activation(R_emp, inv_method, subj_data, label_ind, SNR_ind):
     brain.add_label(label=subj_data['labels'][cog_closest_source],borders=10,color='blue',alpha=0.6)
     return brain
 
-def plot_dipolar_activation(R, inv_method, subj_data, SNRs, label_ind, SNR_ind):
-    stc = mne.SourceEstimate(data=R[subj_data['subject']]['r_master_point_patch'][inv_method][:,label_ind,SNR_ind], 
-                             vertices = [subj_data['fwd']['src'][0]['vertno'], 
-                                         subj_data['fwd']['src'][1]['vertno']], 
-                             tmin=0, tstep=1, subject=subj_data['subject'])
-    brain = stc.plot(subjects_dir = subj_data['settings'].subjects_dir(), smoothing_steps=4, transparent=True, 
-                     clim = {'kind' : 'percent', 'lims' : [2,50,98]}, 
-                     title='method : ' + inv_method + ' ' + 'subj: ' + subj_data['subject'] + \
-                     ' label_ind: ' + str(label_ind) + ' SNR: ' + str(SNRs[SNR_ind])[0:5])
-    brain.add_label(label=subj_data['labels'][label_ind],borders=1,color='blue',alpha=0.8) 
-    return brain
-
 ###############################################################
 # Plot average of subjects results
 
 # Plot median source metrics over cortex for SNR_ind
 def plot_res_metrics_topo(R_emp, src, SNRs, res_metrics, labels, SNR_ind, data_path, subject, data_dir='', save_stc=False):
+    """ Plots example psf and coge for label_ind over cortex at SNR_ind.
+
+    Parameters
+    ----------
+    R_emp : dictionary
+        Dictionary containing empirical resolution matrix data.
+    src : list
+        List of source space objects.
+    SNRs : list
+        List of SNRs.
+    res_metrics: dictionary
+        Resolution metrics as returned by get_resolution_metrics.
+    labels : list
+        List of labels.
+    SNR_ind : int
+        Index in SNRs to plot.
+    data_path : string
+        Path to subject data. 
+    subject : string
+        Name of subject.
+    data_dir = string
+        Path to directory to save stc if save_stc is True.
+
+    Returns
+    -------
+    brain : mlab plot 
+        Plot of resolution metrics.
+        
+    """
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
     for inv_method in inv_methods:
@@ -160,6 +301,24 @@ def plot_res_metrics_topo(R_emp, src, SNRs, res_metrics, labels, SNR_ind, data_p
 
 # Plot cumulative histograms
 def plot_res_metrics_hist(res_metrics, inv_methods, SNR_ind):
+    """ Plots cumulative histograms of resolution metrics for SNR determined by
+    SNR_ind.
+
+    Parameters
+    ----------
+    res_metrics: dictionary
+        Resolution metrics as returned by get_resolution_metrics.
+    inv_methods : list
+        List of inverse methods to plot.
+    SNR_ind : int
+        Index in SNRs to plot (SNR=SNRs[SNR_ind]).
+
+    Returns
+    -------
+    fig : Figure  
+        Histogram plot.
+        
+    """
     for c, metric in enumerate(['SD', 'PE']):
         data_to_plot = {}
         for inv_method in inv_methods:
@@ -172,9 +331,28 @@ def plot_res_metrics_hist(res_metrics, inv_methods, SNR_ind):
     
  
 def plot_medians(R_emp, res_metrics, figure_labels, metric_labels, SNRs_to_plot):
-    """
-    Plot median values for localization error and point spread. 
-    10**-5 in SNRs_to_plot will be replaced with 0 and 10**3 with inf.
+    """ Plots the median of resolution metrics for each SNR across subjects p/m
+    one standard error.
+
+    Parameters
+    ----------
+    R_emp : dictionary
+        Dictionary containing empirical resolution matrix data.
+    res_metrics: dictionary
+        Resolution metrics as returned by get_resolution_metrics.
+    figure_labels : list
+        List containing the legend labels for the figures.
+    metric_labels : list
+        List containing the metrics, will be plotted as y-labels.
+    SNRs_to_plot : list
+        List of floats containing SNRs to plot. Will be the same as SNRs except
+        for when SNRs=0 and inf.
+
+    Returns
+    -------
+    fig : Figure  
+        Medians plot.
+        
     """
     import matplotlib.ticker as mticker
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
@@ -224,23 +402,75 @@ def plot_medians(R_emp, res_metrics, figure_labels, metric_labels, SNRs_to_plot)
     return fig
 
 def plot_roc_auc(R_emp, roc_stats, SNR_ind, figure_labels, SNRs_to_plot, plot_limits=False, plot_SNR_0_inf=True):
+    """ Plots the ROC curves for one SNR and AUC as a function of SNR.
+
+    Parameters
+    ----------
+    R_emp : dictionary
+        Dictionary containing empirical resolution matrix data.
+    roc_stats : dictionary 
+        Dictionary containing ROC stats across subjects (roc_stats_all_subjects
+        as returned from get_roc).
+    SNR_ind : int
+        Index of SNR at which ROC will be plotted.
+    figure_labels: list
+        List of strings of legend labels, usually methods.
+    SNRs_to_plot : list
+        List of floats containing SNRs to plot. Will be the same as SNRs except
+        for when SNRs=0 and inf.
+    plot_limits : boolean
+        If True, will plot with dashed line style between first and second data
+        points as well as between second-to-last and last data points to 
+        indicate that there is a discontinuity on the x-axis between these points.
+    plot_SNR_0_inf : boolean
+        If True, will replace the first and last ticks by 0 and inf, respectively.
+
+    Returns
+    -------
+    h : Figure  
+        ROC plot.
+    h2 : Figure  
+        AUC plot.
+        
+    """
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
     roc_to_plot = [np.mean(roc_stats['roc'][inv_method][SNR_ind, :, :, :], axis=2) for inv_method in inv_methods]
-    evaler.plot_roc(roc_to_plot, labels=figure_labels)
+    h = evaler.plot_roc(roc_to_plot, labels=figure_labels)
     plt.grid(linestyle='--', alpha=0.2)
     auc = {}
     for method in list(roc_stats['acu'].keys()):
         auc.update({method : np.array([np.min(roc_stats['acu'][method], axis=1), 
                                       np.mean(roc_stats['acu'][method], axis=1), 
                                       np.max(roc_stats['acu'][method], axis=1)])})
-    evaler.plot_auc(auc, SNRs_to_plot, plot_limits=plot_limits, plot_SNR_0_inf=plot_SNR_0_inf)
+    h2 = evaler.plot_auc(auc, SNRs_to_plot, plot_limits=plot_limits, plot_SNR_0_inf=plot_SNR_0_inf)
     plt.grid(linestyle='--', alpha=0.2)
     plt.xlim(1.001*np.min(SNRs_to_plot), 0.999*np.max(SNRs_to_plot))
     plt.tight_layout()
-    return 
+    return h, h2
 
 def plot_auc_sigmoid_fit(R_emp, roc_stats, SNRs_to_plot):
+    """ Plots AUC and a fitted sigmoidal curve.
+
+    Parameters
+    ----------
+    R_emp : dictionary
+        Dictionary containing empirical resolution matrix data.
+    roc_stats : dictionary 
+        Dictionary containing ROC stats across subjects (roc_stats as returned 
+        from get_roc).
+    SNRs_to_plot : list
+        List of floats containing SNRs to plot. Will be the same as SNRs except
+        for when SNRs=0 and inf.
+
+    Returns
+    -------
+    h : Figure  
+        AUC plot.
+    r2 : float  
+         Pearson product-moment correlation coefficient.
+        
+    """
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
     SNRs = R_emp[list(R_emp.keys())[0]]['r_master']['SNRs']
@@ -249,5 +479,5 @@ def plot_auc_sigmoid_fit(R_emp, roc_stats, SNRs_to_plot):
                                                                   SNRs_to_plot, inv_method)
         x_inds = np.array([np.argmin(np.abs(x-SNR)) for SNR in SNRs])
         r2 = np.corrcoef(auc_analytical[x_inds], auc_numerical)**2
-        print(r2)
-    return 
+        print('r2 = '+str(r2))
+    return h, r2

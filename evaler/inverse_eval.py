@@ -1,6 +1,7 @@
 
 """
-Contains functions that reads fiff files and/or stc_ground_truth and return point spread, cross-talk, average error etc. 
+Functions for evaluating and visualizing M/EEG source estimates.
+Author: John GW Samuelsson. 
 """
 
 import numpy as np
@@ -19,7 +20,25 @@ from .plotting_tools import plot_topographic_parcellation
 
 
 def setup_labels(subject, parc, subjects_dir, unwanted_labels=['unknown', 'corpuscallosum']):
+    """Returns a list of labels from parcellation, removing unwanted labels.
 
+    Parameters
+    ----------
+    subject : string
+    parc : string
+        The name of the parcellation file located in labels dir of the subjects_dir.
+    subjects_dir : string      
+    unwanted_labels : list
+        List of strings, containing the names of the unwanted labels.
+
+    Returns
+    -------
+    labels : list
+        The list of the labels.
+    unwanted_labels : list
+        The list of the unwanted labels.
+
+    """
     #Read all labels
     all_labels = mne.read_labels_from_annot(subject, parc, subjects_dir=subjects_dir)
     labels = []
@@ -41,6 +60,9 @@ def setup_labels(subject, parc, subjects_dir, unwanted_labels=['unknown', 'corpu
 
 def setup(subjects_dir, subject, data_path, fname_raw, fname_fwd,
           fname_eve, fname_trans, fname_epochs, n_epochs, meg_and_eeg, plot_labels=False):
+    """
+    Setup some important subject data.
+    """
     #Save data paths in settings object
     settings = settings_class(
                  subjects_dir=subjects_dir,
@@ -112,12 +134,60 @@ def setup(subjects_dir, subject, data_path, fname_raw, fname_fwd,
 
 
 def _getInversionKernel(inverse_operator, nave=1, lambda2=1. / 9., method='MNE', label=None, pick_ori=None):
+    """Returns the inversion kernel of the inverse_operator.
+
+    Parameters
+    ----------
+    inverse_operator : InverseOperator
+        Instance of inverse operator to extract inverse kernel from.
+    nave : int
+        Number of averages (scales the noise covariance).
+    lambda2 : float
+        The regularization factor. Recommended to be 1 / SNR**2.
+    method : "MNE" | "dSPM" | "sLORETA" | "eLORETA"
+        Use minimum norm, dSPM (default), sLORETA, or eLORETA.
+    label : Label | None
+        Restricts the source estimates to a given label. If None,
+        source estimates will be computed for the entire source space.
+    pick_ori : None | "normal" | "vector"
+        Which orientation to pick (only matters in the case of 'normal').
+
+    Returns
+    -------
+    K : array, shape (n_vertices, n_channels) | (3 * n_vertices, n_channels)
+        The kernel matrix. 
+
+    """
+
     inv = prepare_inverse_operator(inverse_operator,nave,lambda2,method)
     K = _assemble_kernel(inv,label,method,pick_ori)[0]
     return K
 
 
 def _convert_real_resolution_matrix_to_labels(R, labels, label_verts):
+    """Converts a point-source resolution matrix to a patch-source resolution
+    matrix based on labels by summing all rows in the point-source matrix 
+    corresponding to sources in each label, mimicking simultaneous activation 
+    of all sources in the patch. The average of the absolute values of 
+    reconstructed sources in each patch is then taken as the patch activity
+    reconstruction.
+
+    Parameters
+    ----------
+    R : array, shape (n_vertices, n_vertices)
+        Point-source resolution matrix.
+    labels : list
+        List of labels representing patches.
+    label_verts : dictionary
+        Dictionary containing label names as keys and their vertix indicies as 
+        values.
+
+    Returns
+    -------
+    R_label : array, shape (n_labels, n_labels) 
+        The patch-source resolution matrix. 
+
+    """
     R_label = np.zeros((len(labels),len(labels)))
     for a, label in enumerate(labels):
         for b, label_r in enumerate(labels):
@@ -127,6 +197,23 @@ def _convert_real_resolution_matrix_to_labels(R, labels, label_verts):
 
 
 def standardize_columns(R, arg):
+    """Standardizes matrix R with respect to the maximal value in each column 
+    or its diagonal value.
+
+    Parameters
+    ----------
+    R : array
+        Matrix to be normalized.
+    arg : "diag" | "max"
+        String indicating whether matrix' columns should be normalized with respect
+        to its diagonal or maximal values.
+
+    Returns
+    -------
+    R_std : array
+        Normalized matrix. 
+
+    """
     if arg not in ['diag','max']:
         raise ValueError('arg must be either "diag" or "max". Breaking.')
     R_std = R.copy()
@@ -139,31 +226,27 @@ def standardize_columns(R, arg):
     return R_std
 
 
-def standardize_rows(R):
-    R_std = R.copy()
-    for d in range(len(R_std)):
-        diag = R_std[d,d]
-        R_std[d,:] = R_std[d,:]/diag
-    return R_std
-
-
-def get_point_spread_matrix(R, arg):
-    R_std = standardize_columns(np.abs(R), arg)
-    return R_std
-
-
-def get_crosstalk_matrix(R):
-    R_std = standardize_rows(np.abs(R))
-    return R_std
-
-
 def get_noise(epochs, epochs_to_use):
-    ############## Noise from epochs
+    """Returns average of epochs corresponding to epochs_to_use and noise 
+    covariance computed from the other epochs.
+
+    Parameters
+    ----------
+    epochs : instance of Epochs
+    epochs_to_use : list
+        List containing indicies of epochs to use to calculate average.
+
+    Returns
+    -------
+    noise_cov : instance of Covariance
+        Noise covariance.
+    epochs_ave : instance of Evoked
+        Average of epochs.
+    """
+
     epochs.pick_types(meg=True, eeg=True, exclude=[])
     epochs.pick_types(meg=True, eeg=True)
     noise_epochs = epochs[[x for x in range(len(epochs)) if x not in epochs_to_use]]
-    
-    # Compute noise covariance
     noise_cov = mne.compute_covariance(noise_epochs)
     
     epochs = epochs[epochs_to_use]
@@ -172,6 +255,20 @@ def get_noise(epochs, epochs_to_use):
     return noise_cov, epochs_ave
 
 def correct_fwd(fwd, labels_unwanted):
+    """Corrects a forward object by removing the parts of the gain matrix 
+    corresponding to sources in labels_unwanted.
+
+    Parameters
+    ----------
+    fwd : instance of Forward object
+    labels_unwanted : list
+        List containing the unwanted labels.
+
+    Returns
+    -------
+    fwd : instance of Forward
+        The corrected forward object.
+    """
     sources_to_remove = np.array([])
     offset = fwd['src'][0]['nuse']
     vertnos_lh = fwd['src'][0]['vertno']
@@ -199,8 +296,57 @@ def correct_fwd(fwd, labels_unwanted):
  
 
 def get_R(inp):
-    """
-    General inverse solvers (empirical resolution)    
+    """Calculates empirical and/or analytical resolution matrix.
+
+    Parameters
+    ----------
+    inp : tuple containing the following parameters;
+        waveform : array
+            Activation waveform; time signal of label activation amplitude.
+        fname_fwd : string
+            Path to forward object.
+        labels : list
+            List containing parcellation labels.
+        invmethod : string
+            Inverse method to test.    
+            Could be "MNE" | "dSPM" | "sLORETA" | "eLORETA" | "mixed_norm"
+            for MNE, dSPM, sLORETA, eLORETA or MxNE source estimate, respectively.
+            If invmethod is none of these, then you have to give your own estimate
+            in inv_function.            
+        labels_unwanted : list
+            List containing unwanted labels.
+        SNR : float
+            SNR in sensor space of the estimation, how the simulated signal will
+            be scaled.
+        activation_labels : list
+            List of labels to be activated. Defaults to labels argument.
+        compute_analytical : Boolean
+            If True, analytical resolution matrix will be computed as well. Only
+            works if invmethod is MNE, dSPM, sLORETA or eLORETA.
+        inv_function : function handle
+            User-defined function that returns the estimate. See documentation in
+            for_manuscript.py.
+        cov_fname : string
+            Path to noise covariance. Will be used in creating the inverse operator.
+        ave_fname : string
+            Path to average Evoked object, will act as background activity to be
+            superposed with simulated signal.
+
+    Returns
+    -------
+    If compute_analytical is True:
+        R_emp : array, shape (n_labels, n_activation_labels)
+            Empirical resolution matrix.
+        R_analytical : array, shape (n_labels, n_labels)
+            Analytical resolution matrix grouped together in labels.
+        R : array, shape (n_vertices, n_vertices)
+            Analytical resolution matrix for point sources.
+    If compute_analytical is False:
+        R_emp : array, shape (n_labels, n_activation_labels)
+            Empirical resolution matrix.
+        R_label_vert : array, shape (n_vertices, n_activation_labels)
+            Empirical resolution matrix, but where the resulting estimates are 
+            not grouped into labels but remains as point sources.
     """
     import warnings
     waveform, fname_fwd, labels, invmethod, labels_unwanted, SNR, \
@@ -252,10 +398,6 @@ def get_R(inp):
     # Create inverse operator if applied inverse method is linear
     if invmethod in ['MNE', 'dSPM', 'eLORETA', 'sLORETA']:
         inverse_operator = mne.minimum_norm.make_inverse_operator(epochs_ave.info, fwd, noise_cov, depth=None, fixed=True)
-#        if SNR > 0:
-#            lambda2 = 1. / SNR**2
-#        else:
-#            lambda2 = 10**9
     else:
         inverse_operator = None
 
@@ -283,7 +425,6 @@ def get_R(inp):
             lambda2 = 1./9.
         else:
             sens = scaling * signal + noise 
-#        sens = sens - np.repeat(np.mean(sens,axis=1).reshape(sens.shape[0],1), sens.shape[1], axis=1)
         evoked = epochs_ave.copy()
         evoked.data = sens
         evoked.set_eeg_reference('average', projection=True, verbose='WARNING')
@@ -320,7 +461,8 @@ def get_R(inp):
             # Resolution matrix without summing of patch vertices, resulting in shape (n_vertices, n_labels)
             R_label_vert[:,c] = np.mean(np.abs(source), axis=1)
             
-        print('\n ' + ', ' + invmethod + ': ' + str(c/len(activation_labels) * 100) + ' % done... \n')
+        print(invmethod + ': ' + str(c/len(activation_labels) * 100) + ' %... ', end='', flush=True)
+    print('\n done.')
 
     if compute_analytical:
         
@@ -342,34 +484,72 @@ def get_R(inp):
 
 
 def remove_diagonal(A):
+    """
+    Removes diagonal from matrix A.
+    """
+    
     A_off_diagonal = A.copy()
     np.fill_diagonal(A_off_diagonal, 9999999999999999)
-#    outp = np.array([]).reshape(A.shape[0]-1, 0)
-#    for c, column in enumerate(A.T):
-#        list_column = list(column)
-#        list_column.pop(c)
-#        list_column = np.array(list_column)
-#        outp = np.concatenate((outp, list_column.reshape(len(list_column), 1)), axis=1)
-#    return outp
     bool_ind = A_off_diagonal.T==9999999999999999
     return A_off_diagonal.T[np.where(~bool_ind)].reshape(A_off_diagonal.shape[1], A_off_diagonal.shape[0]-1).T  
 
 
 def get_average_cross_talk_map(R):
+    """Returns median of standardized rows (cross-talk).
+
+    Parameters
+    ----------
+    R : array, shape (n_sources, n_sources)
+        Resolution matrix.
+    Returns
+    -------
+    acm : array, shape (n_sources)
+        Median cross-talk of each activation.
+    """
     R = standardize_rows(R)
     acm = np.median(R,axis=1)
     return acm
 
 
-def get_average_point_spread(R,arg):
+def get_average_point_spread(R,arg='max'):
+    """Returns median of standardized columns (point-spread).
+
+    Parameters
+    ----------
+    R : array, shape (n_sources, n_sources)
+        Resolution matrix.
+    arg : 'max' | 'diag'
+        String indicating whether matrix' columns should be normalized with respect
+        to its diagonal or maximal values.
+    Returns
+    -------
+    acm : array, shape (n_sources)
+        Median point-spread of each activation.
+    """
     R = standardize_columns(R,arg)
-    #Remove diagonal elements when standardizing wrt max value in each column
     R_copy = remove_diagonal(R)
     acm = np.median(R_copy,axis=0)
     return acm
 
 
 def get_spatial_dispersion(R, src, labels):
+    """Calculates spatial dispersion (a metric for point spread) as defined in 
+    Samuelsson et al. 2020.
+
+    Parameters
+    ----------
+    R : array, shape (n_sources, n_sources)
+        Resolution matrix.
+    src : List of Source objects
+        Source space of the subject.
+    labels : list, containing n_sources elements
+        List containing the parcellation labels. 
+
+    Returns
+    -------
+    SD : array, shape (n_sources)
+        Spatail dispersion in centimetres.
+    """
     rr = np.concatenate((src[0]['rr'][src[0]['vertno']],
                          src[1]['rr'][src[1]['vertno']]), axis=0)
     peak_positons = rr[np.argmax(np.abs(R), axis=0), :]
@@ -393,6 +573,23 @@ def get_spatial_dispersion(R, src, labels):
     
 
 def get_spherical_coge(R, settings, labels):
+    """Calculates center of gravity and error over the spherical surface manifold,
+    each hemisphere separately.
+
+    Parameters
+    ----------
+    R : array, shape (n_sources, n_sources)
+        Resolution matrix.
+    settings: Settings object
+        Instance of settings containing subject details.
+    labels : list
+        List containing the parcellation labels.
+
+    Returns
+    -------
+    spherical_coge : array, shape (n_sources)
+        Center of gravity error over spherical surface.
+    """
     src = mne.setup_source_space(subject=settings.subject(), surface='sphere', spacing='ico5',
                                  subjects_dir=settings.subjects_dir(), add_dist=False)
 
@@ -432,6 +629,26 @@ def get_spherical_coge(R, settings, labels):
     return spherical_coge
 
 def get_label_center_points(labels, src, src_space_sphere):
+    """Finds the center vertex of each label in labels. The center vertex is
+    defined as the closest vertex to the center of gravity of all vertices in
+    each label in the spherical source space.
+
+    Parameters
+    ----------
+    labels : list
+        List of labels.
+    src : list
+        List of surface source space objects.
+    src_space_sphere : list
+        List of spherical surface source space objects.
+
+    Returns
+    -------
+    center_points : array, shape (n_sources, 3)
+        Positions of center sources in each label.
+    center_vertices : array, shape (n_sources)
+        Indicies of center vertices.
+    """
     labels_divide = [[(c, label) for c, label in enumerate(labels) if label.hemi=='lh'],
                  [(c, label) for c, label in enumerate(labels) if label.hemi=='rh']]
     
@@ -455,18 +672,39 @@ def get_label_center_points(labels, src, src_space_sphere):
             else:
                 center_vertex = sources_in_label[np.argmin(np.linalg.norm(label_center-rr[sources_in_label, :], axis=1))]
                 center_vertices.append(center_vertex + c*src[0]['np'])
+
     print('zero labels:')
     print(zero_labels)
+
     if len(zero_labels) > 0:
         return np.zeros((1000,3)), np.zeros((1000,3))
     center_vertices = np.array(center_vertices)
     center_points = np.concatenate((src[0]['rr'], src[1]['rr']), axis=0)[center_vertices, :]
+    
     return center_points, center_vertices 
 
 
 def get_peak_dipole_error(R_vl, src, src_space_sphere, labels):
-    """
-    Return error (in cm) between center of patch, found by spherical inflation, and peak reconstruction.
+    """Calculates localization bias in the source estimates as the distance 
+    between the center point of the activated label and the location of the 
+    reconstructed source with the highest amplitude.
+
+    Parameters
+    ----------
+    R_vl : array, shape (n_vertices, n_labels)
+        Resolution matrix where source reconstructions have not been grouped
+        together based on labels.
+    src : list
+        List of surface source space objects.
+    src_space_sphere : list
+        List of surface spherical source space objects.
+    labels : list
+        List of labels.
+
+    Returns
+    -------
+    errors : array, shape (n_labels)
+        Peak localization errors.
     """
     
     label_center_points = get_label_center_points(labels, src, src_space_sphere)[0]
@@ -480,7 +718,20 @@ def get_peak_dipole_error(R_vl, src, src_space_sphere, labels):
         
 
 def get_label_center(labels, src):
+    """Get center of gravity of sources of each label in labels.
 
+    Parameters
+    ----------
+    src : list
+        List of source space objects.
+    labels : list
+        List containing the labels.
+
+    Returns
+    -------
+    label_center : array, shape (n_labels, 3)
+        The center of gravity of each label.
+    """
     label_center = []
 
     for label in labels:
@@ -494,37 +745,29 @@ def get_label_center(labels, src):
     
     return label_center
 
-def get_3d_error(R, src, labels, case='patch_patch'):
-
-    if case not in ['point_patch', 'point_point', 'patch_patch']:
-        raise Exception('case argument must either be point_patch, point_point or patch_patch')
     
-    label_center = get_label_center(labels, src) 
-    
-    if case == 'point_patch':
-        max_sources = np.argmax(np.abs(R), axis=0)
-        rr = np.concatenate((src[0]['rr'][src[0]['vertno']], 
-                             src[1]['rr'][src[1]['vertno']]), axis=0)
-        errors = np.linalg.norm(rr[max_sources,:] - label_center, axis=1)
+def get_center_of_gravity_error(R, src, labels):     
+    """Calculates the center of gravity error.
 
-    if case == 'point_point':
-        max_sources = np.argmax(np.abs(R), axis=0)
-        errors = []
-        rr = np.concatenate((src[0]['rr'][src[0]['vertno']], 
-                             src[1]['rr'][src[1]['vertno']]), axis=0)
-        for c, max_source in enumerate(max_sources):
-            errors.append(np.linalg.norm(rr[max_source,:] - rr[c, :]))
+    Parameters
+    ----------
+    R : array, shape (n_labels, n_labels)
+        Resolution matrix.
+    src : list
+        List of source space objects.
+    labels : list
+        List containing the labels.
 
-    if case == 'patch_patch':
-        max_sources = np.argmax(np.abs(R), axis=0)
-        errors = []
-        for c, max_source in enumerate(max_sources):
-            errors.append(np.linalg.norm(label_center[max_source] - label_center[c]))
-
-    return 100*np.array(errors)
-    
-    
-def get_center_of_gravity_error(R, src, labels):        
+    Returns
+    -------
+    coge : array, shape (n_labels)
+        Center of gravity errors in centimetres.
+    center_of_gravity_list : list
+        List containing the center of gravity of the labels.
+    cog_closest_source : list
+        List of the closest sources to the center of gravity of each label.
+        
+    """
     label_center = get_label_center(labels, src)            
     coge = []
     center_of_gravity_list = []
@@ -535,30 +778,42 @@ def get_center_of_gravity_error(R, src, labels):
         error = np.linalg.norm(label_center[c] - center_of_gravity)
         coge.append(error)
         center_of_gravity_list.append(center_of_gravity)
-        cog_closest_source.append(np.argmin(np.linalg.norm(np.repeat(center_of_gravity.reshape((1,3)),len(labels),axis=0)-label_center, axis=1)))
+        cog_closest_source.append(np.argmin(np.linalg.norm(np.repeat(center_of_gravity.reshape((1,3)),
+                                                                     len(labels),axis=0)-label_center, axis=1)))
         
     return 100*np.array(coge), center_of_gravity_list, cog_closest_source
 
 
-def amplitude_reconstruction_error(R):
-#    ar = np.abs(np.max(R,axis=0)/np.max(R)-1)
-    ar = np.abs(np.log10(np.max(R,axis=0)/np.max(R)))
-    return ar
-
-
-def resolution_map_parcellation(settings, R, labels, res_argument, arg='max', clims = [2,50,98], transparent=True, plot=False):
-    if res_argument not in ['point_spread','cross_talk']:
-        raise ValueError('res_argument has to be either point_spread or cross_talk')
-    if res_argument == 'point_spread':
-        acm = get_average_point_spread(R, arg)
-    if res_argument == 'cross_talk':
-        acm = get_average_cross_talk_map(R)
-        
-    if plot:
-        plot_topographic_parcellation(acm, settings, labels, clims = clims, transparent=transparent)
-    return acm
-
 def resolution_map(settings, R, res_argument, arg='max', fpath='', print_surf=False):
+    """Displays and optionally prints a topographic map of cross talk and point spread.
+
+    Parameters
+    ----------
+    settings : instance of Settings object
+    R : array, shape (n_labels, n_labels)
+        Resolution matrix.
+    res_argument : 'point_spread' | 'cross_talk'
+        Which resolution metrics to plot.
+    arg : 'max' | 'diag'
+        Which element to standardize the resolution matrix with. If 'diag',
+        then resolution matrix will be standardized with respect to the activated
+        source and cross-talk and point-spread could be above 1. If 'max', then
+        resolution matrix is standardized with respect to the maximal value in
+        each column and row, respectively, and cross-talk and point-spread is 
+        between 0 to 1.
+    fpath : string
+        File path and name to print ply file if print_surf is True.
+    print_surf : boolean
+        If True, will print a ply file with the resolution maps to the file 
+        specified by fpath.
+
+    Returns
+    -------
+    acm : array, shape (n_labels)
+        Point spread or cross talk for each activation.
+    brain : plot
+        mlab surface plot object.
+    """
     if res_argument not in ['point_spread','cross_talk']:
         raise ValueError('res_argument has to be either point_spread or cross_talk')
     if res_argument == 'point_spread':
@@ -575,11 +830,54 @@ def resolution_map(settings, R, res_argument, arg='max', fpath='', print_surf=Fa
             raise ValueError('Must provide fpath to where plyfile will be printed.')
         else:
             print_ply(fpath, src_joined, scalars, vmax = True, vmin = True)
-    return acm,brain 
+    return acm, brain 
 
 
 def get_r_master(SNRs, waveform, fname_fwd, labels, inv_methods, labels_unwanted,
                  cov_fname, ave_fname, activation_labels=None, inv_function=None, n_jobs=1):
+    """Wrapper that calls get_R to calculate empirical resolution matrices.
+
+    Parameters
+    ----------
+    SNRs : list
+        List of SNR values to get empirical resolution matrix for.
+    waveform : array
+        Activation waveform; time signal of label activation amplitude.
+    fname_fwd : string
+        Path to forward object.
+    labels : list
+        List containing parcellation labels.
+    inv_methods : list
+        Inverse methods to test, elements could be:    
+        "MNE" | "dSPM" | "sLORETA" | "eLORETA" | "mixed_norm".
+        for MNE, dSPM, sLORETA, eLORETA or MxNE source estimate, respectively.
+        If invmethod is none of these, then you have to give your own estimate
+        in inv_function.            
+    labels_unwanted : list
+        List containing unwanted labels.
+    cov_fname : string
+        Path to noise covariance. Will be used in creating the inverse operator.
+    ave_fname : string
+        Path to average Evoked object, will act as background activity to be
+        superposed with simulated signal.
+    activation_labels : list
+        List of labels to be activated. Defaults to labels argument.
+    inv_function : function handle
+        User-defined function that returns the estimate. See documentation in
+        for_manuscript.py.
+    n_jobs : int
+        Number of threads to run in parallell.
+
+    Returns
+    -------
+    r_master: dictionary
+        Dictionary with SNR values as keys and empirical resolution matrices
+        of shape (n_labels, n_labels) as values.
+    r_master_vl: dictionary
+        Dictionary with SNR values as keys and empirical resolution matrices
+        of shape (n_vertices, n_labels), where vertices have not been grouped
+        into labels, as values.
+    """    
     if  n_jobs < 2*len(SNRs):
         SNR_njobs = n_jobs
         activation_jobs = 1
@@ -641,6 +939,20 @@ def get_r_master(SNRs, waveform, fname_fwd, labels, inv_methods, labels_unwanted
 
 
 def get_roc_statistics(r_master, inv_methods):
+    """Gets ROC statistics from r_master object.
+
+    Parameters
+    ----------
+    r_master : dictionary
+        r_master object, of the type returned by get_r_master function.
+    inv_methods : list
+        List of strings of inverse methods to calculate ROC for.
+
+    Returns
+    -------
+    roc_stats : dictionary
+        Dictionary containing ROC stats roc, auc and all_stats.
+    """
     roc_stats = {'roc' : {}, 'acu' : {}, 'all_stats' : {}}
     
     for inv_method in inv_methods:
@@ -661,6 +973,26 @@ def get_roc_statistics(r_master, inv_methods):
 
 
 def get_roc(R):
+    """Calculates ROC curve from resolution matrix R.
+
+    Parameters
+    ----------
+    R : array, shape (n_sources, n_sources)
+        Resolution matrix.
+
+    Returns
+    -------
+    ROC : array, shape (2, n_T)
+        Points on the ROC curve, i.e., (False Positive Rate, True Positive Rate).
+        The threshold value will vary from -0.01 to 1.01 with n_T as the number
+        of points in between (can be an arbitrary value).
+    acu : float
+        Area under the ROC curve. Will be between 0 and 1.
+    all_stats : dictionary
+        Dictionary with True positives, False negatives, True negatives and 
+        False positives as keys and their respective values for each threshold 
+        value.
+    """
     n_T = 100
     ROC = np.zeros((2,n_T+3))    
     R_max = standardize_columns(R, arg='max')
@@ -690,28 +1022,20 @@ def get_roc(R):
     return ROC, acu, all_stats
 
 
-def get_source_metrics(r_master, fwd, labels, inv_method, settings, case='patch_patch', arg='diag'):
-#    source_metrics = {'psf_ave' : {}, 'coge' : {}, 'rel_amp' : {}, 'sphere_error' : {}, 
-#                      '3d_error' : {}}
-    source_metrics = {'psf_ave' : {}, '3d_error' : {}}
-
-    for c, SNR in enumerate(r_master['SNRs']):
-        # Get right resolution matrix from r_master
-        R = r_master[inv_method][:,:,c]
-
-        # Compute source metrics
-        source_metrics['psf_ave'].update({str(SNR) : get_average_point_spread(R, arg=arg)})
-        source_metrics['3d_error'].update({str(SNR) : get_3d_error(R, fwd['src'], labels, case=case)})
-#        source_metrics['coge'].update({str(SNR) : get_center_of_gravity_error(R, fwd['src'], labels)[0]})
-#        source_metrics['rel_amp'].update({str(SNR) : amplitude_reconstruction_error(R)})
-#        sphere_met = get_spherical_coge(R, settings, labels)
-#        source_metrics['sphere_error'].update({str(SNR) : sphere_met['coge']})
-#        source_metrics['sphere_vector_norm'].update({str(SNR) : sphere_met['cog_vector_norm']})
-
-    return source_metrics
-
-
 def count_sources_in_labels(labels, fwd):
+    """Counts the number of active sources in each label of labels.
+
+    Parameters
+    ----------
+    labels : list
+        List containing the labels.
+    fwd : instance of Forward object
+
+    Returns
+    -------
+    vert_nrs : array, shape (n_labels)
+        Number of active sources in each label.
+    """
     vert_nrs = []
     for label in labels: 
         if label.hemi == 'lh': 
