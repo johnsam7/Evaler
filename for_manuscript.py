@@ -1,6 +1,6 @@
 """
 Code for reproducing data and Figures for article "Spatial Fidelity of MEG/EEG Source Estimates: 
-A Unified Evaluation Approach", Samuelsson et al., 2020.
+A General Evaluation Approach", Samuelsson et al., 2020.
 """
 import evaler
 import numpy as np
@@ -18,19 +18,23 @@ SNRs_to_plot.insert(0, 10**-5)
 SNRs_to_plot.append(10**3)
 subjects = ['a', 'b', 'c', 'd', 'e']
 inv_methods = ['mixed_norm', 'MNE', 'dSPM', 'eLORETA', 'sLORETA']
-data_path = './subj_data/' # Make sure current working folder is in the evaler folder
+data_path = './subj_data/' # NB make sure current working folder is in the evaler folder!
 waveform = np.ones((1,101))
 mindist = 3.0
 
-# Create forward models for subjects
+# Create forward models for subjects (only have to do once)
 for subject in subjects:
-    model = mne.read_bem_surfaces(data_path+subject+'/'+subject+'-model.fif')
-    src = mne.read_source_spaces(data_path+subject+'/'+subject+'-src.fif')
-    ave = mne.read_evokeds(data_path+subject+'/'+subject+'-ave.fif')[0]
-    bem = mne.make_bem_solution(model)
-    fwd = mne.make_forward_solution(ave.info, data_path+subject+'/'+subject+'-trans.fif', src,
-                                    bem=bem, mindist=mindist, eeg=True, n_jobs=1)
-    mne.write_forward_solution(data_path+subject+'/'+subject+'-fwd.fif', fwd, overwrite=True)
+    try: 
+        mne.read_forward_solution(data_path+subject+'/'+subject+'-fwd.fif')
+    except OSError:
+        print('Forward solution not found. Computing for subject '+subject)
+        model = mne.read_bem_surfaces(data_path+subject+'/'+subject+'-model.fif')
+        src = mne.read_source_spaces(data_path+subject+'/'+subject+'-src.fif')
+        ave = mne.read_evokeds(data_path+subject+'/'+subject+'-ave.fif')[0]
+        bem = mne.make_bem_solution(model)
+        fwd = mne.make_forward_solution(ave.info, data_path+subject+'/'+subject+'-trans.fif', src,
+                                        bem=bem, mindist=mindist, eeg=True, n_jobs=1)
+        mne.write_forward_solution(data_path+subject+'/'+subject+'-fwd.fif', fwd, overwrite=True)
 
 # -------------------------
 # Source estimation method to test
@@ -52,36 +56,34 @@ def inv_function(evoked, SNR, linear_method=False, inverse_operator=None):
 # -------------------------
 # Run simulation 
 anal_method = 'MNE'
-R_anal, R_emp_a = evaler.get_analytical_R(subjects[0], data_path, anal_method, inv_function)
-R_emp = evaler.get_empirical_R(data_path, subjects, inv_methods, SNRs, waveform, inv_function, n_jobs=len(SNRs)*4)
+R_anal, R_emp_a, R_point = evaler.get_analytical_R(subjects[0], data_path, anal_method, inv_function)
+R_emp = evaler.get_empirical_R(data_path, subjects, inv_methods, SNRs, waveform, inv_function, len(SNRs))
 
 # Get stats from resolution matrices
 r_master_ave = evaler.get_average_R(R_emp)
 res_metrics = evaler.get_resolution_metrics(R_emp, data_path)
-roc_stats, roc_stats_all_subjects = evaler.get_roc(R_emp)
+prc_stats, prc_stats_all_subjects = evaler.get_classifier_curve_stats(R_emp, curve='prc_stats')
+roc_stats, roc_stats_all_subjects = evaler.get_classifier_curve_stats(R_emp, curve='roc_stats')
 
 # -------------------------
 # Plot Figures
 subject = 'a'
 labels, labels_unwanted = pickle.load(open(data_path+subject+'/labels', 'rb'))
-figure_labels = inv_methods
+all_labels = labels + labels_unwanted
+figure_labels = ['MxNE'] + inv_methods[1:5]
 metric_labels = ['Localization error PE (cm)', 'Spatial dispersion SD (cm)']
 SNR_ind = np.argmin(np.abs(np.array(SNRs)-3))
 
 # Analytical and empirical (lim(SNR) --> inf) resolution matrices (Figure 2)
 evaler.plot_resolution_matrix(R=R_emp_a, labels=labels, title='R_emp, inf SNR, '+anal_method, SNR='inf', 
-                              vrange=(0., 0.08), show_colorbar=False, show_labels=False)
-
+                              vrange=(0., 0.08), show_colorbar=False, show_labels=False, figsize=(3, 3))
 evaler.plot_resolution_matrix(R=R_anal, labels=labels, title='Anaytical R, '+anal_method, SNR='inf', 
-                              vrange=(0., 0.08), show_colorbar=False, show_labels=False)
+                              vrange=(0., 0.08), show_colorbar=False, show_labels=False, figsize=(3, 3))
 
 # Empirical resolution matrices for MNE and MxNE (Figure 4)
-method = 'MNE'
-evaler.plot_resolution_matrix(R=r_master_ave[method][:,:,SNR_ind], labels=labels,title=method, 
-                              SNR=SNRs[SNR_ind], vrange=(0., 0.08), show_colorbar=False, show_labels=False)
-method = 'mixed_norm'
-evaler.plot_resolution_matrix(R=r_master_ave[method][:,:,SNR_ind], labels=labels, title=method, 
-                              SNR=SNRs[SNR_ind], vrange=(0., 0.08), show_colorbar=False, show_labels=False)
+for method in ['MNE', 'mixed_norm']:
+    evaler.plot_resolution_matrix(R=r_master_ave[method][:,:,SNR_ind], labels=labels,title=method, 
+                                  SNR=SNRs[SNR_ind], vrange=(0., 0.08), show_colorbar=False, show_labels=False, figsize=(3, 3))
 
 # Cumulative resolution metrics histograms (Figure 5)
 fig_hist = evaler.plot_res_metrics_hist(res_metrics, inv_methods, SNR_ind)
@@ -89,6 +91,8 @@ fig_hist = evaler.plot_res_metrics_hist(res_metrics, inv_methods, SNR_ind)
 # Median resolution metrics to SNR (Figure 6)
 fig_medians = evaler.plot_medians(R_emp, res_metrics, figure_labels, metric_labels, SNRs_to_plot)
 
-# ROC and AUC to SNR (Figure 7)
+# ROC and PRC plots (Figure 7)
 evaler.plot_roc_auc(R_emp, roc_stats_all_subjects, SNR_ind, figure_labels, SNRs_to_plot=SNRs_to_plot,
-             plot_limits=False, plot_SNR_0_inf=True)
+             plot_limits=False, plot_SNR_0_inf=True, curve='roc')
+evaler.plot_roc_auc(R_emp, prc_stats_all_subjects, SNR_ind, figure_labels, SNRs_to_plot=SNRs_to_plot,
+             plot_limits=False, plot_SNR_0_inf=True, curve='prc')

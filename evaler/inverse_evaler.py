@@ -63,7 +63,7 @@ def get_analytical_R(subject, data_path, inv_method, inv_function):
     inp = np.ones((1,101)), data_path+subject+'/'+subject+'-fwd.fif', labels, inv_method, labels_unwanted, np.inf, \
         labels, True, inv_function, data_path+subject+'/'+subject+'-cov.fif', data_path+subject+'/'+subject+'-ave.fif'
     R_emp, R_anal, R_points = evaler.get_R(inp)
-    return R_anal, R_emp
+    return R_anal, R_emp, R_points
 
 def get_empirical_R(data_path, subjects, inv_methods, SNRs, waveform, inv_function=None, n_jobs=1):
     """Gets empirical resolution matrix.
@@ -105,9 +105,11 @@ def get_empirical_R(data_path, subjects, inv_methods, SNRs, waveform, inv_functi
                                          data_path+subject+'/'+subject+'-cov.fif', data_path+subject+'/'+subject+'-ave.fif',
                                          labels, inv_function, n_jobs)
         roc_stats = evaler.get_roc_statistics(r_m, inv_methods)
+        prc_stats = evaler.get_prc_statistics(r_m, inv_methods)
         R_emp.update({subject : {'r_master' : r_m, 
                                  'r_master_point_patch' : r_mpp, 
-                                 'roc_stats' : roc_stats}})
+                                 'roc_stats' : roc_stats,
+                                 'prc_stats' : prc_stats}})
     return R_emp
 
 def get_average_R(R_emp):
@@ -177,13 +179,15 @@ def get_resolution_metrics(R_emp, data_path):
         res_metrics.update({method : {'PE' : PE_method, 'SD' : SD_method}})
     return res_metrics
 
-def get_roc(R_emp):
-    """Calculates resolution metrics.
+def get_classifier_curve_stats(R_emp, curve='roc_stats'):
+    """Calculates ROC or PRC resolution metrics.
     
     Parameters
     ----------
     R_emp : dictionary
         Dictionary containing empirical resolution matrix data.
+    curve : 'roc_stats' | 'prc_stats'
+        String indicating whether to calculate receiver-operator or precision-recall curves.
 
     Returns
     -------
@@ -193,19 +197,21 @@ def get_roc(R_emp):
         Dictionary containing ROC stats across subjects.
         
     """
+    if not curve in ['roc_stats', 'prc_stats']:
+        raise ValueError('Curve argument has to be either roc_stats or prc_stats')
     roc_stats = {}
     roc_stats_all_subjects = {}
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
     subjects = list(R_emp.keys())
-    for metrics in list(R_emp[subjects[0]]['roc_stats'].keys())[0:2]:
+    for metrics in list(R_emp[subjects[0]][curve].keys())[0:2]:
         methods_dir = {}
         methods_dir_subjects = {}
         for method in inv_methods:
-            r_master_subject = np.array([]).reshape(np.array(R_emp[subjects[0]]['roc_stats'][metrics][method]).shape+(0,))
+            r_master_subject = np.array([]).reshape(np.array(R_emp[subjects[0]][curve][metrics][method]).shape+(0,))
             for subject in list(R_emp.keys()):
-                r_master_subject = np.concatenate((r_master_subject, np.array(R_emp[subject]['roc_stats'][metrics][method]). \
-                                                   reshape(np.array(R_emp[subject]['roc_stats'][metrics][method]).shape+(1,))), \
+                r_master_subject = np.concatenate((r_master_subject, np.array(R_emp[subject][curve][metrics][method]). \
+                                                   reshape(np.array(R_emp[subject][curve][metrics][method]).shape+(1,))), \
                                                    axis=len(r_master_subject.shape)-1)
             scals = np.array([np.nanmin(r_master_subject, axis=len(r_master_subject.shape)-1), 
                               np.nanmean(r_master_subject, axis=len(r_master_subject.shape)-1), 
@@ -256,7 +262,8 @@ def plot_label_activation(R_emp, inv_method, subj_data, label_ind, SNR_ind):
 # Plot average of subjects results
 
 # Plot median source metrics over cortex for SNR_ind
-def plot_res_metrics_topo(R_emp, src, SNRs, res_metrics, labels, SNR_ind, data_path, subject, data_dir='', save_stc=False):
+def plot_res_metrics_topo(R_emp, src, SNRs, res_metrics, labels, SNR_ind, data_path, 
+                          subject, data_dir='', save_stc=False, plot=False):
     """ Plots example psf and coge for label_ind over cortex at SNR_ind.
 
     Parameters
@@ -292,11 +299,15 @@ def plot_res_metrics_topo(R_emp, src, SNRs, res_metrics, labels, SNR_ind, data_p
         for c, metric in enumerate(['SD', 'PE']):
             scals = np.median(res_metrics[inv_method][metric][:,:,SNR_ind], axis=0).reshape(len(labels),1)
             stc = mne.simulation.simulate_stc(src, labels, scals, tmin=0, tstep=1)
-            brain = stc.plot(subjects_dir=data_path, subject=subject, smoothing_steps=3, transparent=True, title=inv_method+' '+metric+' '+str(SNRs[SNR_ind]),
-                             clim = {'kind' : 'value', 'lims' : [(0., 5.0, 7.0), (0., 0.75, 4.)][c]})
+            if plot:
+                brain = stc.plot(subjects_dir=data_path, subject=subject, smoothing_steps=3, 
+                                 transparent=True, title=inv_method+' '+metric+' '+str(SNRs[SNR_ind]),
+                                 clim = {'kind' : 'value', 'lims' : [(0., 5.0, 7.0), (0., 0.75, 4.)][c]})
             if save_stc:
                 stc.save(data_dir + metric + '_' + inv_method + '_' + str(SNRs[SNR_ind]))
-    return brain
+    if plot:
+        return brain
+    return 
 
 
 # Plot cumulative histograms
@@ -322,7 +333,8 @@ def plot_res_metrics_hist(res_metrics, inv_methods, SNR_ind):
     for c, metric in enumerate(['SD', 'PE']):
         data_to_plot = {}
         for inv_method in inv_methods:
-            data_to_plot.update({inv_method : np.median(res_metrics[inv_method][metric][:, :, SNR_ind], axis=0)})
+            sorted_medians = np.sort(np.median(res_metrics[inv_method][metric][:, :, SNR_ind], axis=0))
+            data_to_plot.update({inv_method : np.insert(sorted_medians[::50], 20, sorted_medians[999])})
         fig = evaler.cumulative_plot(data_to_plot, ['Spatial dispersion SD (cm)', 'Localization error PE (cm)'][c], 
                                      cutoff = 1., plot_cutoff_line=False, labels=inv_methods, log_scale=False)
         plt.tight_layout()
@@ -359,10 +371,13 @@ def plot_medians(R_emp, res_metrics, figure_labels, metric_labels, SNRs_to_plot)
     inv_methods.remove('SNRs')
     subjects = list(R_emp.keys())
     colors = evaler.generate_colors(len(inv_methods))
+    markers = evaler.generate_markers(len(inv_methods))
     plot_SNR_0_inf = True
+    markersize = 5
+
     for b, metric in enumerate(['PE', 'SD']):
         dpi,figsize = evaler.figure_preferences()
-        fig = plt.figure(dpi=dpi,figsize=(5,4))
+        fig = plt.figure(dpi=dpi,figsize=figsize)
         for c, inv_method in enumerate(inv_methods):
             median_sources = np.median(res_metrics[inv_method][metric], axis=1)
             median_subjects = np.median(median_sources, axis=0)
@@ -376,17 +391,18 @@ def plot_medians(R_emp, res_metrics, figure_labels, metric_labels, SNRs_to_plot)
                              alpha=0.05)
             if plot_SNR_0_inf:
                 plt.semilogx(SNRs_to_plot[1:len(SNRs_to_plot)-1], median_subjects[1:len(SNRs_to_plot)-1],
-                                          '-', color=colors[c], label=figure_labels[c], linewidth=1.)
-                plt.semilogx(SNRs_to_plot[0:2], median_subjects[0:2], '--', color=colors[c], linewidth=1.)
+                                          '-', marker=markers[c], markersize=markersize, color=colors[c], label=figure_labels[c], linewidth=1.)
+                plt.semilogx(SNRs_to_plot[0:2], median_subjects[0:2], '--', marker=markers[c], markersize=markersize, color=colors[c], linewidth=1.)
                 plt.semilogx(SNRs_to_plot[len(SNRs_to_plot)-2:len(SNRs_to_plot)], 
                                           median_subjects[len(SNRs_to_plot)-2:len(SNRs_to_plot)],
-                                          '--', color=colors[c], linewidth=1.)
+                                          '--', marker=markers[c], markersize=markersize, color=colors[c], linewidth=1.)
             else:
-                plt.semilogx(SNRs_to_plot, median_subjects, '-', color=colors[c], label=figure_labels[c])
+                plt.semilogx(SNRs_to_plot, median_subjects, '-', marker=markers[c],
+                              markersize=markersize, color=colors[c], label=figure_labels[c])
         plt.legend()
         plt.ylabel(metric_labels[b])
         plt.xlabel('SNR')
-        plt.ylim(0,9)
+#        plt.ylim(0,9)
         plt.grid(linestyle='--', alpha=0.2)
         ax=plt.gca()
         a = mticker.ScalarFormatter()
@@ -401,7 +417,8 @@ def plot_medians(R_emp, res_metrics, figure_labels, metric_labels, SNRs_to_plot)
         plt.tight_layout()
     return fig
 
-def plot_roc_auc(R_emp, roc_stats, SNR_ind, figure_labels, SNRs_to_plot, plot_limits=False, plot_SNR_0_inf=True):
+def plot_roc_auc(R_emp, roc_stats, SNR_ind, figure_labels, SNRs_to_plot, 
+                 plot_limits=False, plot_SNR_0_inf=True, curve='roc'):
     """ Plots the ROC curves for one SNR and AUC as a function of SNR.
 
     Parameters
@@ -410,7 +427,7 @@ def plot_roc_auc(R_emp, roc_stats, SNR_ind, figure_labels, SNRs_to_plot, plot_li
         Dictionary containing empirical resolution matrix data.
     roc_stats : dictionary 
         Dictionary containing ROC stats across subjects (roc_stats_all_subjects
-        as returned from get_roc).
+        as returned from get_classifier_curve_stats).
     SNR_ind : int
         Index of SNR at which ROC will be plotted.
     figure_labels: list
@@ -424,6 +441,8 @@ def plot_roc_auc(R_emp, roc_stats, SNR_ind, figure_labels, SNRs_to_plot, plot_li
         indicate that there is a discontinuity on the x-axis between these points.
     plot_SNR_0_inf : boolean
         If True, will replace the first and last ticks by 0 and inf, respectively.
+    curve : 'roc' | 'prc'
+        String indicating whether you want to plot roc or prc curves.
 
     Returns
     -------
@@ -435,15 +454,17 @@ def plot_roc_auc(R_emp, roc_stats, SNR_ind, figure_labels, SNRs_to_plot, plot_li
     """
     inv_methods = list((R_emp[list(R_emp.keys())[0]]['r_master']).keys())
     inv_methods.remove('SNRs')
-    roc_to_plot = [np.mean(roc_stats['roc'][inv_method][SNR_ind, :, :, :], axis=2) for inv_method in inv_methods]
-    h = evaler.plot_roc(roc_to_plot, labels=figure_labels)
+    roc_to_plot = [np.mean(roc_stats[curve][inv_method][SNR_ind, :, :, :], axis=2) for inv_method in inv_methods]
+    step = int(roc_to_plot[0].shape[1]/20)
+    roc_to_plot = [np.insert(arr[:,::step], 20, arr[:,arr.shape[1]-1],axis=1) for arr in roc_to_plot]
+    h = evaler.plot_roc(roc_to_plot, labels=figure_labels, curve=curve)
     plt.grid(linestyle='--', alpha=0.2)
     auc = {}
     for method in list(roc_stats['acu'].keys()):
         auc.update({method : np.array([np.min(roc_stats['acu'][method], axis=1), 
                                       np.mean(roc_stats['acu'][method], axis=1), 
                                       np.max(roc_stats['acu'][method], axis=1)])})
-    h2 = evaler.plot_auc(auc, SNRs_to_plot, plot_limits=plot_limits, plot_SNR_0_inf=plot_SNR_0_inf)
+    h2 = evaler.plot_auc(auc, SNRs_to_plot, plot_limits=plot_limits, plot_SNR_0_inf=plot_SNR_0_inf, curve=curve)
     plt.grid(linestyle='--', alpha=0.2)
     plt.xlim(1.001*np.min(SNRs_to_plot), 0.999*np.max(SNRs_to_plot))
     plt.tight_layout()
@@ -458,7 +479,7 @@ def plot_auc_sigmoid_fit(R_emp, roc_stats, SNRs_to_plot):
         Dictionary containing empirical resolution matrix data.
     roc_stats : dictionary 
         Dictionary containing ROC stats across subjects (roc_stats as returned 
-        from get_roc).
+        from get_classifier_curve_stats).
     SNRs_to_plot : list
         List of floats containing SNRs to plot. Will be the same as SNRs except
         for when SNRs=0 and inf.

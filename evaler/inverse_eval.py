@@ -5,7 +5,7 @@ Author: John GW Samuelsson.
 """
 
 import numpy as np
-from mayavi import mlab
+#from mayavi import mlab
 from multiprocessing import Pool
 
 import mne
@@ -254,6 +254,64 @@ def get_noise(epochs, epochs_to_use):
     
     return noise_cov, epochs_ave
 
+
+def get_empirical_R_large(data_path, subjects, inv_methods, SNRs, waveform, inv_function):
+    """
+    Get empirical resolution matrix for large simulations (splits up inverse
+    methods in different runs)
+    """
+    
+    nested_inv_methods = [[inv_method] for inv_method in inv_methods]
+    for inv_methods_n in nested_inv_methods:
+        R_emp = evaler.get_empirical_R(data_path, subjects, inv_methods_n, SNRs, waveform, inv_function, len(SNRs))
+        pickle.dump(R_emp, open('./R_emp_'+inv_methods[0],'wb'))
+
+    return 
+
+def load_R_emp(inv_methods):
+    """Loads empirical resolution matrices computed and saved for different 
+    inverse methods.
+
+    Parameters
+    ----------
+    inv_methods : list
+        List containing strings of names of inverse methods.
+
+    Returns
+    -------
+    R_emp_all : dictionary
+        Loaded empirical resolution matrix containing data for all inverse methods.
+    """
+
+    R_emp = pickle.load(open('./R_emp_'+inv_methods[0],'rb'))
+    R_emp_all = {}
+    for subj in list(R_emp.keys()):
+        R_emp_all.update({subj : {}})
+        for stats in list(R_emp[subj].keys()):
+            R_emp_all[subj].update({stats : {}})
+            if stats in ['r_master', 'r_master_point_patch']:
+                for inv_method in inv_methods:
+                    R_emp_all[subj][stats].update({inv_method : []})
+            else:
+                for sub_stats in list(R_emp[subj][stats].keys())[0:2]:
+                    R_emp_all[subj][stats].update({sub_stats : {}})
+                    for inv_method in inv_methods:
+                        R_emp_all[subj][stats][sub_stats].update({inv_method : []})
+    
+    for inv_method in inv_methods:
+        R_emp = pickle.load(open('./R_emp_'+inv_method,'rb'))
+        for subj in list(R_emp.keys()):
+            for stats in list(R_emp[subj].keys()):
+                if stats in ['r_master', 'r_master_point_patch']:
+                    R_emp_all[subj][stats][inv_method] = R_emp[subj][stats][inv_method]
+                else:
+                    for sub_stats in list(R_emp[subj][stats].keys())[0:2]:
+                        R_emp_all[subj][stats][sub_stats][inv_method] = R_emp[subj][stats][sub_stats][inv_method]
+    R_emp_all[list(R_emp_all.keys())[0]]['r_master'].update({'SNRs' : SNRs})
+    
+    return R_emp_all
+
+
 def correct_fwd(fwd, labels_unwanted):
     """Corrects a forward object by removing the parts of the gain matrix 
     corresponding to sources in labels_unwanted.
@@ -390,22 +448,40 @@ def get_R(inp):
     # Find noise power for mags, grads and eeg (will be used for SNR scaling later)
     mod_ind = {'mag' : [], 'grad' : [], 'eeg' : []}
     noise_power = mod_ind.copy()
+    start_ind = 0
     for c, (meg, eeg) in enumerate([('mag', False), ('grad', False), (False, True)]):
         inds = mne.pick_types(epochs_ave.info, meg = meg, eeg = eeg)
         mod_ind[list(mod_ind.keys())[c]] = inds
         noise_power[list(mod_ind.keys())[c]] = np.mean(np.linalg.norm(noise[inds, :], axis=1))
+    noise = noise[goodies, :]
     
     # Create inverse operator if applied inverse method is linear
     if invmethod in ['MNE', 'dSPM', 'eLORETA', 'sLORETA']:
+        
         inverse_operator = mne.minimum_norm.make_inverse_operator(epochs_ave.info, fwd, noise_cov, depth=None, fixed=True)
     else:
         inverse_operator = None
 
+    # Find activated source amplitude scaling by setting averge SNR to constant
+    sign_pow = {}
+    for key in list(mod_ind.keys()):
+        signal_powers = []
+        for c,label in enumerate(activation_labels):
+            inds = label_verts[label.name]
+            G = fwd['sol']['data'][:, :][:, inds]*10**-8
+            signal = np.sum(G, axis=1)
+            signal_power = np.mean(np.abs(signal[mod_ind[key]])*np.sqrt(waveform.shape[1]))
+            signal_powers.append(signal_power)
+        sign_pow.update({key : np.mean(signal_powers)})
+    snrs = [sign_pow[key] / noise_power[key] for key in list(mod_ind.keys())]
+    ave_scale = SNR / np.mean(snrs)
+
+
     # Patch activation of each label
     for c,label in enumerate(activation_labels):
         inds = label_verts[label.name]
-        G = fwd['sol']['data'][goodies, :][:, inds]
-        act = np.repeat(waveform, repeats=len(inds), axis=0)#*10**-8
+        G = fwd['sol']['data'][:, inds]
+        act = np.repeat(waveform, repeats=len(inds), axis=0)*10**-8
         signal = np.dot(G,act)
 
         """
@@ -415,19 +491,30 @@ def get_R(inp):
         of time points in the waveform. If calculating time-averaged resolution matrix for constant activation function, 
         also scale SNR with respect to number of time points.
         """
-        empirical_SNR = 0
-        for key in list(mod_ind.keys()):
-            signal_strength = np.mean(np.linalg.norm(signal[mod_ind[key], :], axis=1))
-            empirical_SNR = empirical_SNR + 1. / 3. * signal_strength / noise_power[key]
-        scaling = SNR / empirical_SNR
+### Fixed SNR scaling for each activation starts here
+#        empirical_SNR = 0
+#        for key in list(mod_ind.keys()):
+#            signal_strength = np.mean(np.linalg.norm(signal[mod_ind[key], :], axis=1))
+#            empirical_SNR = empirical_SNR + 1. / 3. * signal_strength / noise_power[key]
+#        scaling = SNR / empirical_SNR
+### Fixed scaling ends here
+        signal = signal[goodies, :]
+        scaling = ave_scale
         if scaling == np.inf:
             sens = signal
             lambda2 = 1./9.
         else:
             sens = scaling * signal + noise 
+        
         evoked = epochs_ave.copy()
         evoked.data = sens
         evoked.set_eeg_reference('average', projection=True, verbose='WARNING')
+        # Need to put evoked into format with bad channels for inverse modeling
+        evoked_mod = evoked.copy()
+        evoked_mod._data = np.zeros((len(evoked.ch_names), evoked._data.shape[1]))
+        evoked_mod._data[:] = np.nan
+        evoked_mod._data[goodies, :] = evoked._data
+        evoked = evoked_mod
 
         if invmethod == 'mixed_norm':
             estimate = mne.inverse_sparse.mixed_norm(evoked, fwd, noise_cov, alpha = 55, 
@@ -448,6 +535,7 @@ def get_R(inp):
                 break_point
                 raise Exception('Estimate was equal to zero. Aborting.')
         else:
+
             # Inv_function is a user specified inverse method that maps evoked -> array (n_labels x n_labels)
             source = inv_function(evoked, SNR, invmethod, inverse_operator)
             if np.sum(np.isnan(source))>0:
@@ -461,7 +549,7 @@ def get_R(inp):
             # Resolution matrix without summing of patch vertices, resulting in shape (n_vertices, n_labels)
             R_label_vert[:,c] = np.mean(np.abs(source), axis=1)
             
-        print(invmethod + ': ' + str(c/len(activation_labels) * 100) + ' %... ', end='', flush=True)
+        print(labels[0].subject + ', ' + invmethod + ': ' + str(c/len(activation_labels) * 100) + ' %... ', end='\r', flush=True)
     print('\n done.')
 
     if compute_analytical:
@@ -972,6 +1060,38 @@ def get_roc_statistics(r_master, inv_methods):
     return roc_stats
 
 
+def get_prc_statistics(r_master, inv_methods):
+    """Gets PRC statistics from r_master object.
+
+    Parameters
+    ----------
+    r_master : dictionary
+        r_master object, of the type returned by get_r_master function.
+    inv_methods : list
+        List of strings of inverse methods to calculate ROC for.
+
+    Returns
+    -------
+    prc_stats : dictionary
+        Dictionary containing PRC stats prc, auc and all_stats.
+    """
+    prc_stats = {'prc' : {}, 'acu' : {}, 'all_stats' : {}}
+    
+    for inv_method in inv_methods:
+        R_tensor = r_master[inv_method]
+        prc_list = {'prc' : [], 'acu' : [], 'all_stats' : []}
+        
+        for c,SNR in enumerate(list(r_master['SNRs'])):
+            prc, acu = get_prc(R_tensor[:,:,c])
+            prc_list['prc'].append(prc)
+            prc_list['acu'].append(acu)
+            
+        prc_stats['prc'].update({inv_method : prc_list['prc']})
+        prc_stats['acu'].update({inv_method : prc_list['acu']})
+        
+    return prc_stats
+
+
 def get_roc(R):
     """Calculates ROC curve from resolution matrix R.
 
@@ -1020,6 +1140,50 @@ def get_roc(R):
     
     acu = np.abs(np.trapz(y=ROC[1,:], x=ROC[0,:], dx=0.001))
     return ROC, acu, all_stats
+
+
+def get_prc(R):
+    """Calculates precision-recall curve from resolution matrix R.
+    Y-axis: PPV = TP/(TP+FP)
+    X-axis: TPR = TP/(TP+FN)
+
+    Parameters
+    ----------
+    R : array, shape (n_sources, n_sources)
+        Resolution matrix.
+
+    Returns
+    -------
+    ROC : array, shape (2, n_T)
+        Points on the PRC curve, i.e., (False Positive Rate, True Positive Rate).
+        The threshold value will vary from -0.01 to 1.01 with n_T as the number
+        of points in between (can be an arbitrary value).
+    acu : float
+        Area under the ROC curve. Will be between 0 and 1.
+    """
+    n_T = 1000
+    PRC = np.zeros((2,n_T))#np.zeros((2,n_T+3))    
+    R_max = standardize_columns(R, arg='max')
+    true_estimates = np.diag(R_max)
+    R_max_off_diagonals = remove_diagonal(R_max)
+    acu = []
+
+    for c,T in enumerate(np.linspace(-0.001,1.001,n_T)):
+        TP = np.sum(true_estimates > T)
+        FN = len(true_estimates) - TP
+        TN = np.sum(R_max_off_diagonals <= T)
+        FP = np.sum(R_max_off_diagonals >= T)
+        PPV = TP/(TP+FP)
+        TPR = TP/(TP+FN)
+        if np.isnan(PPV):
+            print('NaN encountered for threshold T='+str(T)+', using previous T for setting PPV value')
+            PPV = PRC[1,c-1]
+        PRC[0,c] = TPR
+        PRC[1,c] = PPV
+            
+
+    acu = np.abs(np.trapz(y=PRC[1,:], x=PRC[0,:], dx=0.001))
+    return PRC, acu
 
 
 def count_sources_in_labels(labels, fwd):

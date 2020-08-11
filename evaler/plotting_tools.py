@@ -6,22 +6,22 @@ Created on Wed Aug 21 10:55:39 2019
 @author: ju357
 """
 import matplotlib.pyplot as plt
-from mayavi import mlab
+#from mayavi import mlab
 import numpy as np
 import mne
-from .source_space_tools import join_source_spaces
-#from .mne_simulations import get_raw_noise
-
-
 def figure_preferences():
     font = {'weight' : 'normal',
-            'size'   : 10}
+            'size'   : 8}
 
     plt.rc('font', **font)
 
     dpi = 300
-    figsize = (5,4)    
+    figsize = (4,3)    
     return (dpi,figsize)
+from .source_space_tools import join_source_spaces
+#from .mne_simulations import get_raw_noise
+
+
 
 def generate_colors(N):
     """
@@ -34,9 +34,24 @@ def generate_colors(N):
     if N>10:
         raise Exception('Can only generate a maximum of 10 colors! Breaking.')
     else:
-        colors_rgb = [(0,0,0),(0,0,1.0),(1.0,0,0),(0,1.0,0),(0.7,0,0.7),(0,1.0,1.0), \
-                      (0.5,0.5,0.5),(0.5,0.,0.5),(0.5,0.5,0.0)]
+        colors_rgb = [(0,0,1.0),(1.0,0,0),(0,1.0,0),(0.7,0,0.7),(1.,0.64,0.),(0,1.0,1.0), \
+                      (0.5,0.5,0.5),(0.5,0.,0.5)]
         return colors_rgb[0:N]
+
+
+def generate_markers(N):
+    """
+    Returns a list of markers that can be used by plotting/rendering packages.
+    Input:
+        N = desired number of markers (may not exceed 8)
+    Output:
+        markers = list of markers 
+    """
+    if N>8:
+        raise Exception('Can only generate a maximum of 8 markers! Breaking.')
+    else:
+        return ['o', '^', 'D', '*', 'x', 's', '>', '+']
+
 
 def add_tick(axis,tick_value,color='k'):
     """
@@ -146,12 +161,15 @@ def plot_3d_dipoles(fwd, dipole_waveforms, t, verts):
                           color=dip_colors[c], scale_factor=0.5E-2)
 
 
-def plot_auc(auc_dic, SNRs, plot_limits=False, plot_SNR_0_inf=False):
+def plot_auc(auc_dic, SNRs, plot_limits=False, plot_SNR_0_inf=False, curve='roc'):
     import matplotlib.ticker as mticker
     
     dpi,figsize = figure_preferences()
     colors = generate_colors(len(auc_dic.keys()))
     h = plt.figure(dpi=dpi, figsize=figsize)
+    markers = generate_markers(len(auc_dic.keys()))
+    markersize = 5
+    alpha = 1.
     
     for c, key in enumerate(auc_dic.keys()):
         auc = auc_dic[key]
@@ -160,28 +178,36 @@ def plot_auc(auc_dic, SNRs, plot_limits=False, plot_SNR_0_inf=False):
         else:
             label = key
         if plot_limits:
-            plt.semilogx(SNRs, auc[0,:], '--', alpha = 0.5, linewidth = .8, color=colors[c])
-            plt.semilogx(SNRs, auc[1,:], '-', label = label, color=colors[c])
-            plt.semilogx(SNRs, auc[2,:], '--', alpha = 0.5, linewidth = .8, color=colors[c])
+            plt.semilogx(SNRs, auc[0,:], '--', alpha = 0.4, linewidth = .8, marker=markers[c], color=colors[c])
+            plt.semilogx(SNRs, auc[1,:], '-', alpha=alpha, label = label, marker=markers[c], color=colors[c])
+            plt.semilogx(SNRs, auc[2,:], '--', alpha = 0.4, linewidth = .8, marker=markers[c], color=colors[c])
         else:
             if plot_SNR_0_inf:
-                plt.semilogx(SNRs[1:len(SNRs)-1], auc[1,:][1:len(SNRs)-1],
-                                          '-', color=colors[c], label=label)
-                plt.semilogx(SNRs[0:2], auc[1,:][0:2], '--', color=colors[c])
-                plt.semilogx(SNRs[len(SNRs)-2:len(SNRs)], 
-                                          auc[1,:][len(SNRs)-2:len(SNRs)],
-                                          '--', color=colors[c])
+                plt.semilogx(SNRs[1:len(SNRs)-1], auc[1,:][1:len(SNRs)-1], '-', 
+                                  alpha=alpha, marker=markers[c], markersize=markersize, color=colors[c], label=label)
+                plt.semilogx(SNRs[0:2], auc[1,:][0:2], '--', alpha=alpha, marker=markers[c], markersize=markersize, color=colors[c])
+                plt.semilogx(SNRs[len(SNRs)-2:len(SNRs)], auc[1,:][len(SNRs)-2:len(SNRs)], '--', 
+                                  alpha=alpha, marker=markers[c], markersize=markersize, color=colors[c])
             else:
-                plt.semilogx(SNRs, auc[1,:], '-', label = label, color=colors[c])
+                plt.semilogx(SNRs, auc[1,:], '-', alpha=alpha, label = label, marker=markers[c], markersize=markersize, color=colors[c])
     
 #    plt.ylim(0.35, 1.05)
-    plt.plot(np.array([np.min(SNRs) , np.max(SNRs)]), 
-             np.array([0.5, 0.5]), '--', alpha=0.5, color='gray')
-    plt.plot(np.array([np.min(SNRs) , np.max(SNRs)]), 
-             np.array([1.0, 1.0]), '--', alpha=0.5, color='gray')
+    if curve == 'roc':
+        plt.plot(np.array([np.min(SNRs) , np.max(SNRs)]), np.array([1.0, 1.0]), 
+                 '--', color='black', alpha=0.5, label='ideal')
+        plt.plot(np.array([np.min(SNRs) , np.max(SNRs)]), np.array([0.5, 0.5]), 
+                 '--', color='gray', alpha=0.5, label='random')
+        plt.ylabel('AUC (ROC)')
+    if curve == 'prc':
+        plt.plot(np.array([np.min(SNRs) , np.max(SNRs)]), np.array([1.0, 1.0]), 
+                 '--', color='black', alpha=0.5, label='ideal')
+        plt.plot(np.array([np.min(SNRs) , np.max(SNRs)]), np.array([.001, .001]), 
+                 '--', color='gray', alpha=0.5, label='random')
+        plt.ylabel('AUC (PRC)')
+
+
     plt.xlim(np.min(SNRs),np.max(SNRs))
     plt.xlabel('SNR')
-    plt.ylabel('AUC')
     plt.legend(loc='upper left')
     
     # Set non-scientific notation on x-axis
@@ -193,18 +219,32 @@ def plot_auc(auc_dic, SNRs, plot_limits=False, plot_SNR_0_inf=False):
     return h
 
 
-def plot_roc(roc, labels):
+def plot_roc(roc, labels, curve='roc'):
     colors = generate_colors(len(labels))
     dpi,figsize = figure_preferences()
     h = plt.figure(dpi=dpi, figsize=figsize)
+    markers = generate_markers(len(labels))
+    markersize=5
+    alpha = 1.0
 
     for c,roc in enumerate(roc):
-        plt.plot(roc[0,:], roc[1,:], label=labels[c], color=colors[c])
+        plt.plot(roc[0,:], roc[1,:], label=labels[c], marker=markers[c], alpha=alpha, markersize=markersize, color=colors[c])
 
-    plt.plot([0,1],[0,1],linestyle = '--', color='gray')
-    plt.xlabel('False positive rate')
-    plt.ylabel('True positive rate')
-    plt.legend(loc='lower right')
+    if curve == 'roc':
+        plt.plot([0,0,1],[0,1,1],linestyle = '--', color='black', alpha=0.5, label='ideal')
+        plt.plot([0,1],[0,1],linestyle = '--', color='gray', alpha=0.5, label='random')
+        plt.xlabel('False positive rate (1-specificity)')
+        plt.ylabel('True positive rate (sensitivity)')
+        plt.legend(loc='lower right')
+
+    if curve == 'prc':
+        plt.plot([1,1,0],[.001,1,1],linestyle = '--', color='black', alpha=0.5, label='ideal')
+        plt.plot([0,1],[.001,.001],linestyle = '--', color='gray', alpha=0.5, label='random')
+        plt.xlabel('True positive rate (sensitivity)')
+        plt.ylabel('Positive predictive value (precision)')
+        plt.legend(loc='upper right')
+        
+    plt.ylim([-0.02, 1.02])
     plt.tight_layout()
     return h
 
@@ -273,6 +313,8 @@ def cumulative_plot(res_metric, x_label, cutoff = 1.,
     dpi,figsize=figure_preferences()
     percs = []            
     colors = generate_colors(len(labels))
+    markers = generate_markers(len(labels))
+    markersize = 5
 
     for key in list(res_metric.keys()):
         metrics = res_metric[key]
@@ -289,23 +331,23 @@ def cumulative_plot(res_metric, x_label, cutoff = 1.,
                                   density=True))
         plt.close(hist_fig)
         
-    h = plt.figure(dpi=dpi,figsize=(5,4))
+    h = plt.figure(dpi=dpi,figsize=figsize)
     for c,perc in enumerate(percs):
         average_bins = np.mean(np.array([perc[1][0:-1],perc[1][1:len(perc[1])]]).T,axis=1)
         if not labels == None:
             if log_scale:
                 plt.semilogx(np.insert(average_bins,0,average_bins[0]),
-                             np.insert(perc[0],0,0)*100,color=colors[c],label=labels[c])
+                             np.insert(perc[0],0,0)*100, color=colors[c], marker=markers[c], markersize=markersize, label=labels[c])
             else:
                 plt.plot(np.insert(average_bins,0,average_bins[0]),
-                         np.insert(perc[0],0,0)*100,color=colors[c],label=labels[c])
+                         np.insert(perc[0],0,0)*100,color=colors[c], marker=markers[c], markersize=markersize, label=labels[c])
         else:
             if log_scale:
                 plt.semilogx(np.insert(average_bins,0,average_bins[0]),
-                             np.insert(perc[0],0,0)*100,color=colors[c])
+                             np.insert(perc[0],0,0)*100, marker=markers[c], markersize=markersize, color=colors[c])
             else:
                 plt.plot(np.insert(average_bins,0,average_bins[0]),
-                         np.insert(perc[0],0,0)*100,color=colors[c])
+                         np.insert(perc[0],0,0)*100, marker=markers[c], markersize=markersize, color=colors[c])
 
         plt.ylim((0.,100.))
         
@@ -355,7 +397,7 @@ def plot_topographic_parcellation(scalar, settings, labels, clims = [2,50,98], v
                      title=title, alpha=1.0, views='med')
     return brain, stc
 
-def plot_resolution_matrix(R, labels, title, SNR, vrange = None, show_colorbar=False, show_labels=False):
+def plot_resolution_matrix(R, labels, title, SNR, vrange = None, show_colorbar=False, show_labels=False, figsize=(5,5)):
     import matplotlib
     
     # Set figure preferences
@@ -363,7 +405,7 @@ def plot_resolution_matrix(R, labels, title, SNR, vrange = None, show_colorbar=F
             'size'   : 4}
 
     plt.rc('font', **font)
-    plt.figure(figsize=(5,5), dpi=300)
+    plt.figure(figsize=figsize, dpi=300)
     plt.title(title, size=10)
 
     # Rearrange labels in hemispheres and lobes
