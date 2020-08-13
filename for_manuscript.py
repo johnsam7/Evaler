@@ -12,12 +12,12 @@ import pickle
 SNRs = np.hstack((0, np.logspace(-4,-2,num=7), np.logspace(-1.75, 1., num=17),
                        np.logspace(1.5, 2.0,num=2), np.inf))
 SNRs[np.argmin(np.abs(SNRs-3.))] = 3.0
-SNRs = list(SNRs)
+SNRs = list(SNRs) # For a faster run, choose fewer SNR points to test
 SNRs_to_plot = SNRs[1:len(SNRs)-1] # SNRs_to_plot are used bc we cannot plot 0 and inf on a continuous axis
 SNRs_to_plot.insert(0, 10**-5)
 SNRs_to_plot.append(10**3)
 subjects = ['a', 'b', 'c', 'd', 'e']
-inv_methods = ['mixed_norm', 'MNE', 'dSPM', 'eLORETA', 'sLORETA']
+inv_methods = ['mixed_norm', 'MNE', 'dSPM', 'eLORETA', 'sLORETA'] # Warning: eLORETA takes a long time to finish!
 data_path = './subj_data/' # NB make sure current working folder is in the evaler folder!
 waveform = np.ones((1,101))
 mindist = 3.0
