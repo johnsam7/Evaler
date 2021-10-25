@@ -1,4 +1,3 @@
-
 # requirements for Evaler
 numpy >= 1.21.2
 mne >= 0.23.4
