@@ -17,7 +17,7 @@ SETUP_REQUIRES += ["wheel"] if "bdist_wheel" in sys.argv else []
 
 # get the version (don't import mne here, so dependencies are not needed)
 version = None
-with open(op.join('cmb', '_version.py'), 'r') as fid:
+with open(op.join('evaler', '_version.py'), 'r') as fid:
     for line in (line.strip() for line in fid):
         if line.startswith('__version__'):
             version = line.split('=')[1].strip().strip('\'')
