@@ -32,9 +32,6 @@ class settings_class(object):
     _large_memory = True # If all epoch data fit into the Ram
     
     #define default sample input
-    data_path = sample.data_path()
-    meg_path = data_path + '/MEG/sample/'
-    subjects_dir = data_path + 'subjects'
     subject = 'sample'
     fname_raw = 'sample_audvis_raw.fif'
     fname_inv = 'sample_audvis-meg-eeg-oct-6-meg-eeg-inv.fif'
@@ -49,9 +46,9 @@ class settings_class(object):
     # Constructor
     ###############################################################################################
     def __init__(self,
-                 subjects_dir = subjects_dir,
-                 subject = subject,
-                 data_path=meg_path, 
+                 subjects_dir=None,
+                 subject=subject,
+                 data_path=None, 
                  fname_raw=fname_raw,
                  fname_fwd=fname_fwd,
                  fname_eve=fname_eve,
@@ -60,6 +57,12 @@ class settings_class(object):
                  fname_epochs=fname_epochs,
                  meg_and_eeg=True):
         """Return a settings object."""
+
+        if data_path is None:
+            data_path = sample.data_path() + '/MEG/sample/'
+            
+        if subjects_dir is None:
+            subjects_dir = sample.data_path() + 'subjects'
         
         self._meg_and_eeg = meg_and_eeg
         self._data_path = data_path
